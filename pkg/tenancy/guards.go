@@ -13,10 +13,10 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 )
 
-// guardInputs is the configuration tenancy must be compatible with. It is a
+// GuardInputs is the configuration tenancy must be compatible with. It is a
 // plain struct rather than a set of injected configs so the rules can be tested
 // without standing up a hive.
-type guardInputs struct {
+type GuardInputs struct {
 	ClusterID            uint32
 	MaxConnectedClusters uint32
 	ClusterMeshConfig    string
@@ -30,17 +30,17 @@ type guardInputs struct {
 	EnableVTEP          bool
 }
 
-func validateIfEnabled(cfg Config, in guardInputs) error {
+func ValidateIfEnabled(cfg Config, in GuardInputs) error {
 	if !cfg.EnableTenancy {
 		return nil
 	}
-	return validate(in)
+	return Validate(in)
 }
 
-// validate reports every reason tenancy cannot run with the given
+// Validate reports every reason tenancy cannot run with the given
 // configuration. All conflicts are collected so that a misconfigured deployment
 // learns about them in one go instead of one agent restart at a time.
-func validate(in guardInputs) error {
+func Validate(in GuardInputs) error {
 	var errs []error
 
 	// A tenant ID and a ClusterMesh cluster ID are the same datapath bits, so

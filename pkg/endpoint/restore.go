@@ -458,6 +458,7 @@ func (e *Endpoint) toSerializedEndpoint() *serializableEndpoint {
 		K8sPodName:               e.K8sPodName,
 		K8sNamespace:             e.K8sNamespace,
 		K8sUID:                   e.K8sUID,
+		TenantID:                 e.TenantID,
 		DatapathConfiguration:    e.DatapathConfiguration,
 		CiliumEndpointUID:        e.ciliumEndpointUID,
 		Properties:               e.properties,
@@ -569,6 +570,11 @@ type serializableEndpoint struct {
 	// K8sUID is the Kubernetes pod UID of the endpoint
 	K8sUID string
 
+	// TenantID is the datapath tenant (VPC) of the endpoint. It is omitted when
+	// zero so that restore state written by an agent without tenancy, and state
+	// for untenanted endpoints, are byte-identical to before.
+	TenantID uint16 `json:"tenantID,omitempty"`
+
 	// DatapathConfiguration is the endpoint's datapath configuration as
 	// passed in via the plugin that created the endpoint, e.g. the CNI
 	// plugin which performed the plumbing will enable certain datapath
@@ -642,6 +648,7 @@ func (ep *Endpoint) fromSerializedEndpoint(r *serializableEndpoint) {
 	ep.K8sPodName = r.K8sPodName
 	ep.K8sNamespace = r.K8sNamespace
 	ep.K8sUID = r.K8sUID
+	ep.TenantID = r.TenantID
 	ep.DatapathConfiguration = r.DatapathConfiguration
 	ep.Options = r.Options
 	ep.ciliumEndpointUID = r.CiliumEndpointUID

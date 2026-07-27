@@ -37,6 +37,7 @@ import (
 	"github.com/cilium/cilium/pkg/mac"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/resiliency"
+	"github.com/cilium/cilium/pkg/tenancy"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -60,6 +61,7 @@ type endpointAPIManager struct {
 	clientset        k8sClient.Clientset
 	cniConfigManager cni.CNIConfigManager
 	ipam             *ipam.IPAM
+	tenancy          tenancy.Resolver
 }
 
 var _ EndpointAPIManager = &endpointAPIManager{}
@@ -82,10 +84,31 @@ func (m *endpointAPIManager) errorDuringCreation(ep *endpoint.Endpoint, err erro
 	return nil, PutEndpointIDFailedCode, err
 }
 
+// resolveTenantID returns the datapath tenant of a namespace, or 0 (the default
+// VPC) when tenancy is disabled.
+func (m *endpointAPIManager) resolveTenantID(namespace string) uint16 {
+	if m.tenancy == nil || !m.tenancy.Enabled() || namespace == "" {
+		return 0
+	}
+	return m.tenancy.TenantIDForNamespace(namespace)
+}
+
 // createEndpoint attempts to create the endpoint corresponding to the change
 // request that was specified.
+//
+// Tenant endpoints never get a per-endpoint host route, even when
+// --enable-endpoint-routes is set: two tenants may hold the same pod IP, so the
+// routes would collide in the host routing table. On-node delivery for these
+// endpoints goes through the tenant-keyed endpoint map instead. The consequence
+// is that the host network namespace cannot reach tenant pods, which is why
+// kubelet probes against tenant pod IPs do not work.
 func (m *endpointAPIManager) CreateEndpoint(ctx context.Context, epTemplate *models.EndpointChangeRequest) (*endpoint.Endpoint, int, error) {
-	if option.Config.EnableEndpointRoutes {
+	// The tenant is derived from the namespace the CNI reported, which does not
+	// change for the lifetime of the endpoint. Resolving it up front lets the
+	// endpoint-route decision below take it into account.
+	tenantID := m.resolveTenantID(epTemplate.K8sNamespace)
+
+	if option.Config.EnableEndpointRoutes && tenantID == 0 {
 		if epTemplate.DatapathConfiguration == nil {
 			epTemplate.DatapathConfiguration = &models.EndpointDatapathConfiguration{}
 		}
@@ -143,6 +166,8 @@ func (m *endpointAPIManager) CreateEndpoint(ctx context.Context, epTemplate *mod
 	if err != nil {
 		return invalidDataError(ep, fmt.Errorf("unable to parse endpoint parameters: %w", err))
 	}
+
+	ep.TenantID = tenantID
 
 	oldEp := m.endpointManager.LookupCiliumID(ep.ID)
 	if oldEp != nil {

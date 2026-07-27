@@ -44,6 +44,7 @@ type epInfoCache struct {
 	ifIndex                int
 	parentIfIndex          int
 	netNsCookie            uint64
+	tenantID               uint16
 	properties             map[string]any
 
 	// endpoint is used to get the endpoint's logger.
@@ -93,6 +94,7 @@ func (e *Endpoint) createEpInfoCache(epdir string) *epInfoCache {
 		ifIndex:                e.ifIndex,
 		parentIfIndex:          e.parentIfIndex,
 		netNsCookie:            e.NetNsCookie,
+		tenantID:               e.GetTenantID(),
 		properties:             maps.Clone(e.properties),
 
 		endpoint: e,
@@ -130,6 +132,12 @@ func (ep *epInfoCache) StringID() string {
 // GetIdentity returns the security identity of the endpoint.
 func (ep *epInfoCache) GetIdentity() identity.NumericIdentity {
 	return ep.identity
+}
+
+// GetTenantID returns the datapath tenant (VPC) of the endpoint. Endpoints in
+// the host network namespace are never tenanted, so this is 0 for them.
+func (ep *epInfoCache) GetTenantID() uint16 {
+	return ep.tenantID
 }
 
 // GetEndpointNetNsCookie returns the network namespace cookie for the endpoint

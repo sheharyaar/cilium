@@ -36,13 +36,13 @@ type tenantEntry struct {
 	sel  slim_labels.Selector
 }
 
-// resolver is the concrete Resolver, fed by the CiliumTenant and Namespace
-// observers in this package's cell.
+// NamespaceResolver is the concrete Resolver, fed by the CiliumTenant and
+// Namespace observers in the tenancy cell.
 //
 // Lookups do a linear scan over the tenants. That is intentional: there can be
 // at most ClusterIDMax (255) tenants, and a scan avoids having to invalidate a
 // derived namespace->tenant index on every tenant or namespace label change.
-type resolver struct {
+type NamespaceResolver struct {
 	mu      lock.RWMutex
 	enabled bool
 
@@ -50,22 +50,22 @@ type resolver struct {
 	namespaces map[string]slim_labels.Set
 }
 
-func newResolver(enabled bool) *resolver {
-	return &resolver{
+func NewNamespaceResolver(enabled bool) *NamespaceResolver {
+	return &NamespaceResolver{
 		enabled:    enabled,
 		tenants:    make(map[string]tenantEntry),
 		namespaces: make(map[string]slim_labels.Set),
 	}
 }
 
-func (r *resolver) Enabled() bool {
+func (r *NamespaceResolver) Enabled() bool {
 	return r.enabled
 }
 
-// upsertTenant records a tenant and its compiled namespace selector. An ID of 0
+// UpsertTenant records a tenant and its compiled namespace selector. An ID of 0
 // means the operator has not allocated one yet; the tenant is tracked so that a
 // later status update is picked up, but it selects nothing until then.
-func (r *resolver) upsertTenant(name string, id uint16, sel *slim_metav1.LabelSelector) error {
+func (r *NamespaceResolver) UpsertTenant(name string, id uint16, sel *slim_metav1.LabelSelector) error {
 	// An empty or nil selector matches every namespace, which would drag the
 	// entire cluster into a single tenant. Treat it as a configuration error.
 	if sel == nil || (len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0) {
@@ -83,37 +83,37 @@ func (r *resolver) upsertTenant(name string, id uint16, sel *slim_metav1.LabelSe
 	return nil
 }
 
-func (r *resolver) deleteTenant(name string) {
+func (r *NamespaceResolver) DeleteTenant(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tenants, name)
 }
 
-func (r *resolver) upsertNamespace(name string, labels map[string]string) {
+func (r *NamespaceResolver) UpsertNamespace(name string, labels map[string]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.namespaces[name] = slim_labels.Set(labels)
 }
 
-func (r *resolver) deleteNamespace(name string) {
+func (r *NamespaceResolver) DeleteNamespace(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.namespaces, name)
 }
 
-func (r *resolver) TenantIDForNamespace(namespace string) uint16 {
+func (r *NamespaceResolver) TenantIDForNamespace(namespace string) uint16 {
 	_, id := r.lookup(namespace)
 	return id
 }
 
-func (r *resolver) TenantNameForNamespace(namespace string) string {
+func (r *NamespaceResolver) TenantNameForNamespace(namespace string) string {
 	name, _ := r.lookup(namespace)
 	return name
 }
 
 // ConflictingTenants returns the names of the tenants that also select the
 // namespace but lost the lowest-ID tie-break. An empty result means no conflict.
-func (r *resolver) ConflictingTenants(namespace string) []string {
+func (r *NamespaceResolver) ConflictingTenants(namespace string) []string {
 	if !r.enabled {
 		return nil
 	}
@@ -133,7 +133,7 @@ func (r *resolver) ConflictingTenants(namespace string) []string {
 	return names
 }
 
-func (r *resolver) lookup(namespace string) (string, uint16) {
+func (r *NamespaceResolver) lookup(namespace string) (string, uint16) {
 	if !r.enabled {
 		return "", 0
 	}
@@ -152,7 +152,7 @@ func (r *resolver) lookup(namespace string) (string, uint16) {
 // ascending tenant ID so that the winner of an ambiguous namespace is stable
 // regardless of map iteration order. Tenants without an allocated ID are
 // skipped: they cannot be represented in the datapath yet.
-func (r *resolver) matchesLocked(namespace string) []tenantEntry {
+func (r *NamespaceResolver) matchesLocked(namespace string) []tenantEntry {
 	nsLabels, ok := r.namespaces[namespace]
 	if !ok {
 		return nil

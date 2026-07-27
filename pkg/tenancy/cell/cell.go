@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
-package tenancy
+// Package cell wires the tenancy resolver into the agent hive.
+//
+// It is kept separate from [github.com/cilium/cilium/pkg/tenancy] because the
+// wiring needs the agent's Kubernetes StateDB tables, while the resolver itself
+// is consumed by low-level packages that must not depend on them.
+package cell
 
 import (
 	"context"
@@ -20,18 +25,20 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/tenancy"
 	wgcfg "github.com/cilium/cilium/pkg/wireguard/agent"
 )
 
 // Cell resolves which tenant (VPC) a namespace belongs to and refuses startup
 // when tenancy is combined with a feature it cannot work with.
 //
-// Every other tenancy-aware subsystem consumes the Resolver produced here.
+// Every other tenancy-aware subsystem consumes the tenancy.Resolver produced
+// here.
 var Cell = cell.Module(
 	"tenancy",
 	"Overlapping-CIDR multi-tenancy namespace resolver",
 
-	cell.Config(DefaultConfig),
+	cell.Config(tenancy.DefaultConfig),
 
 	cell.ProvidePrivate(k8sresources.CiliumTenantResource),
 	cell.Provide(newTenancyResolver),
@@ -42,8 +49,8 @@ var Cell = cell.Module(
 // newTenancyResolver constructs the resolver. It is always provided, even with
 // tenancy disabled, so consumers can depend on it unconditionally; a disabled
 // resolver reports tenant 0 for every namespace.
-func newTenancyResolver(cfg Config) (Resolver, *resolver) {
-	r := newResolver(cfg.EnableTenancy)
+func newTenancyResolver(cfg tenancy.Config) (tenancy.Resolver, *tenancy.NamespaceResolver) {
+	r := tenancy.NewNamespaceResolver(cfg.EnableTenancy)
 	return r, r
 }
 
@@ -53,8 +60,8 @@ type tenancyParams struct {
 	Logger   *slog.Logger
 	JobGroup job.Group
 
-	Config   Config
-	Resolver *resolver
+	Config   tenancy.Config
+	Resolver *tenancy.NamespaceResolver
 
 	DB         *statedb.DB
 	Namespaces statedb.Table[daemonk8s.Namespace]
@@ -68,7 +75,7 @@ type tenancyParams struct {
 }
 
 func registerTenancy(p tenancyParams) error {
-	if err := validateIfEnabled(p.Config, guardInputs{
+	if err := tenancy.ValidateIfEnabled(p.Config, tenancy.GuardInputs{
 		ClusterID:            p.ClusterInfo.ID,
 		MaxConnectedClusters: p.ClusterInfo.MaxConnectedClusters,
 		ClusterMeshConfig:    p.ClusterMeshCfg.ClusterMeshConfig,
@@ -107,7 +114,7 @@ func (p tenancyParams) watchTenants(ctx context.Context) error {
 		var err error
 		switch ev.Kind {
 		case resource.Upsert:
-			err = p.Resolver.upsertTenant(ev.Object.Name,
+			err = p.Resolver.UpsertTenant(ev.Object.Name,
 				tenantIDOf(ev.Object), ev.Object.Spec.NamespaceSelector)
 			if err != nil {
 				// A malformed selector is a user error; log it and drop the
@@ -116,11 +123,11 @@ func (p tenancyParams) watchTenants(ctx context.Context) error {
 					logfields.Error, err,
 					"tenant", ev.Object.Name,
 				)
-				p.Resolver.deleteTenant(ev.Object.Name)
+				p.Resolver.DeleteTenant(ev.Object.Name)
 				err = nil
 			}
 		case resource.Delete:
-			p.Resolver.deleteTenant(ev.Key.Name)
+			p.Resolver.DeleteTenant(ev.Key.Name)
 		}
 		ev.Done(err)
 	}
@@ -151,10 +158,10 @@ func (p tenancyParams) watchNamespaces(ctx context.Context) error {
 		changes, watch := changeIter.Next(p.DB.ReadTxn())
 		for change := range changes {
 			if change.Deleted {
-				p.Resolver.deleteNamespace(change.Object.Name)
+				p.Resolver.DeleteNamespace(change.Object.Name)
 				continue
 			}
-			p.Resolver.upsertNamespace(change.Object.Name, change.Object.Labels)
+			p.Resolver.UpsertNamespace(change.Object.Name, change.Object.Labels)
 		}
 
 		select {

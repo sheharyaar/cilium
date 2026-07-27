@@ -19,22 +19,22 @@ func selector(t *testing.T, labels map[string]string) *slim_metav1.LabelSelector
 const tenantLabel = "tenant.cilium.io/name"
 
 func TestResolverDisabled(t *testing.T) {
-	r := newResolver(false)
+	r := NewNamespaceResolver(false)
 	require.False(t, r.Enabled())
 
 	// Even fully populated, a disabled resolver reports the default VPC so the
 	// tenant-0 code path stays untouched when --enable-tenancy is unset.
-	require.NoError(t, r.upsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
 	require.Equal(t, uint16(0), r.TenantIDForNamespace("ns-a"))
 	require.Equal(t, "", r.TenantNameForNamespace("ns-a"))
 }
 
 func TestResolverSelectedNamespace(t *testing.T) {
-	r := newResolver(true)
-	require.NoError(t, r.upsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
-	r.upsertNamespace("ns-b", map[string]string{})
+	r := NewNamespaceResolver(true)
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
+	r.UpsertNamespace("ns-b", map[string]string{})
 
 	require.Equal(t, uint16(3), r.TenantIDForNamespace("ns-a"))
 	require.Equal(t, "acme", r.TenantNameForNamespace("ns-a"))
@@ -47,56 +47,56 @@ func TestResolverSelectedNamespace(t *testing.T) {
 }
 
 func TestResolverTenantWithoutAllocatedID(t *testing.T) {
-	r := newResolver(true)
+	r := NewNamespaceResolver(true)
 	// status.tenantID == 0 means the operator has not allocated yet: the
 	// namespace must stay in the default VPC rather than land in tenant 0's
 	// datapath under a tenant name.
-	require.NoError(t, r.upsertTenant("acme", 0, selector(t, map[string]string{tenantLabel: "acme"})))
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
+	require.NoError(t, r.UpsertTenant("acme", 0, selector(t, map[string]string{tenantLabel: "acme"})))
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
 
 	require.Equal(t, uint16(0), r.TenantIDForNamespace("ns-a"))
 	require.Equal(t, "", r.TenantNameForNamespace("ns-a"))
 }
 
 func TestResolverDeleteTenant(t *testing.T) {
-	r := newResolver(true)
-	require.NoError(t, r.upsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
+	r := NewNamespaceResolver(true)
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
 	require.Equal(t, uint16(3), r.TenantIDForNamespace("ns-a"))
 
-	r.deleteTenant("acme")
+	r.DeleteTenant("acme")
 	require.Equal(t, uint16(0), r.TenantIDForNamespace("ns-a"))
 }
 
 func TestResolverDeleteNamespace(t *testing.T) {
-	r := newResolver(true)
-	require.NoError(t, r.upsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
+	r := NewNamespaceResolver(true)
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
 	require.Equal(t, uint16(3), r.TenantIDForNamespace("ns-a"))
 
-	r.deleteNamespace("ns-a")
+	r.DeleteNamespace("ns-a")
 	require.Equal(t, uint16(0), r.TenantIDForNamespace("ns-a"))
 }
 
 func TestResolverNamespaceRelabelled(t *testing.T) {
-	r := newResolver(true)
-	require.NoError(t, r.upsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
-	require.NoError(t, r.upsertTenant("globex", 4, selector(t, map[string]string{tenantLabel: "globex"})))
+	r := NewNamespaceResolver(true)
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+	require.NoError(t, r.UpsertTenant("globex", 4, selector(t, map[string]string{tenantLabel: "globex"})))
 
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme"})
 	require.Equal(t, uint16(3), r.TenantIDForNamespace("ns-a"))
 
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "globex"})
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "globex"})
 	require.Equal(t, uint16(4), r.TenantIDForNamespace("ns-a"))
 }
 
 func TestResolverAmbiguousNamespaceLowestIDWins(t *testing.T) {
-	r := newResolver(true)
+	r := NewNamespaceResolver(true)
 	// Both tenants select ns-a. The resolution must be deterministic and
 	// independent of insertion order: the lowest tenant ID wins.
-	require.NoError(t, r.upsertTenant("globex", 9, selector(t, map[string]string{"shared": "yes"})))
-	require.NoError(t, r.upsertTenant("acme", 4, selector(t, map[string]string{"shared": "yes"})))
-	r.upsertNamespace("ns-a", map[string]string{"shared": "yes"})
+	require.NoError(t, r.UpsertTenant("globex", 9, selector(t, map[string]string{"shared": "yes"})))
+	require.NoError(t, r.UpsertTenant("acme", 4, selector(t, map[string]string{"shared": "yes"})))
+	r.UpsertNamespace("ns-a", map[string]string{"shared": "yes"})
 
 	require.Equal(t, uint16(4), r.TenantIDForNamespace("ns-a"))
 	require.Equal(t, "acme", r.TenantNameForNamespace("ns-a"))
@@ -107,18 +107,18 @@ func TestResolverAmbiguousNamespaceLowestIDWins(t *testing.T) {
 }
 
 func TestResolverEmptySelectorSelectsNothing(t *testing.T) {
-	r := newResolver(true)
+	r := NewNamespaceResolver(true)
 	// An empty selector matches every namespace in Kubernetes semantics, which
 	// would silently place the whole cluster into one tenant. Reject it.
-	require.Error(t, r.upsertTenant("acme", 3, &slim_metav1.LabelSelector{}))
-	require.Error(t, r.upsertTenant("acme", 3, nil))
+	require.Error(t, r.UpsertTenant("acme", 3, &slim_metav1.LabelSelector{}))
+	require.Error(t, r.UpsertTenant("acme", 3, nil))
 
-	r.upsertNamespace("ns-a", map[string]string{})
+	r.UpsertNamespace("ns-a", map[string]string{})
 	require.Equal(t, uint16(0), r.TenantIDForNamespace("ns-a"))
 }
 
 func TestResolverMatchExpressions(t *testing.T) {
-	r := newResolver(true)
+	r := NewNamespaceResolver(true)
 	sel := &slim_metav1.LabelSelector{
 		MatchExpressions: []slim_metav1.LabelSelectorRequirement{{
 			Key:      tenantLabel,
@@ -126,10 +126,10 @@ func TestResolverMatchExpressions(t *testing.T) {
 			Values:   []string{"acme", "acme-staging"},
 		}},
 	}
-	require.NoError(t, r.upsertTenant("acme", 3, sel))
+	require.NoError(t, r.UpsertTenant("acme", 3, sel))
 
-	r.upsertNamespace("ns-a", map[string]string{tenantLabel: "acme-staging"})
-	r.upsertNamespace("ns-b", map[string]string{tenantLabel: "other"})
+	r.UpsertNamespace("ns-a", map[string]string{tenantLabel: "acme-staging"})
+	r.UpsertNamespace("ns-b", map[string]string{tenantLabel: "other"})
 
 	require.Equal(t, uint16(3), r.TenantIDForNamespace("ns-a"))
 	require.Equal(t, uint16(0), r.TenantIDForNamespace("ns-b"))

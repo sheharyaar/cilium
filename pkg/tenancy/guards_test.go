@@ -14,8 +14,8 @@ import (
 )
 
 // validInputs is the minimal configuration tenancy supports.
-func validInputs() guardInputs {
-	return guardInputs{
+func validInputs() GuardInputs {
+	return GuardInputs{
 		ClusterID:            0,
 		MaxConnectedClusters: cmtypes.DefaultClusterInfo.MaxConnectedClusters,
 		ClusterMeshConfig:    "",
@@ -25,7 +25,7 @@ func validInputs() guardInputs {
 }
 
 func TestGuardsAcceptSupportedConfig(t *testing.T) {
-	require.NoError(t, validate(validInputs()))
+	require.NoError(t, Validate(validInputs()))
 }
 
 func TestGuardsDisabledSkipsEverything(t *testing.T) {
@@ -37,71 +37,71 @@ func TestGuardsDisabledSkipsEverything(t *testing.T) {
 	in.EnableIPSec = true
 	in.ClusterID = 7
 
-	require.NoError(t, validateIfEnabled(Config{EnableTenancy: false}, in))
-	require.Error(t, validateIfEnabled(Config{EnableTenancy: true}, in))
+	require.NoError(t, ValidateIfEnabled(Config{EnableTenancy: false}, in))
+	require.Error(t, ValidateIfEnabled(Config{EnableTenancy: true}, in))
 }
 
 func TestGuardsRejectConflicts(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		mutate func(*guardInputs)
+		mutate func(*GuardInputs)
 		errMsg string
 	}{
 		{
 			name:   "clustermesh cluster ID",
-			mutate: func(in *guardInputs) { in.ClusterID = 3 },
+			mutate: func(in *GuardInputs) { in.ClusterID = 3 },
 			errMsg: "shares its ID space with ClusterMesh",
 		},
 		{
 			name:   "clustermesh config directory",
-			mutate: func(in *guardInputs) { in.ClusterMeshConfig = "/var/lib/cilium/clustermesh" },
+			mutate: func(in *GuardInputs) { in.ClusterMeshConfig = "/var/lib/cilium/clustermesh" },
 			errMsg: "shares its ID space with ClusterMesh",
 		},
 		{
 			name:   "native routing",
-			mutate: func(in *guardInputs) { in.RoutingMode = option.RoutingModeNative },
+			mutate: func(in *GuardInputs) { in.RoutingMode = option.RoutingModeNative },
 			errMsg: "requires --routing-mode=tunnel",
 		},
 		{
 			name:   "non multi-pool IPAM",
-			mutate: func(in *guardInputs) { in.IPAM = ipamOption.IPAMKubernetes },
+			mutate: func(in *GuardInputs) { in.IPAM = ipamOption.IPAMKubernetes },
 			errMsg: "requires --ipam=multi-pool",
 		},
 		{
 			name:   "host firewall",
-			mutate: func(in *guardInputs) { in.EnableHostFirewall = true },
+			mutate: func(in *GuardInputs) { in.EnableHostFirewall = true },
 			errMsg: "host firewall",
 		},
 		{
 			name:   "egress gateway",
-			mutate: func(in *guardInputs) { in.EnableEgressGateway = true },
+			mutate: func(in *GuardInputs) { in.EnableEgressGateway = true },
 			errMsg: "egress gateway",
 		},
 		{
 			name:   "ipsec",
-			mutate: func(in *guardInputs) { in.EnableIPSec = true },
+			mutate: func(in *GuardInputs) { in.EnableIPSec = true },
 			errMsg: "IPsec",
 		},
 		{
 			name:   "wireguard",
-			mutate: func(in *guardInputs) { in.EnableWireguard = true },
+			mutate: func(in *GuardInputs) { in.EnableWireguard = true },
 			errMsg: "WireGuard",
 		},
 		{
 			name:   "vtep",
-			mutate: func(in *guardInputs) { in.EnableVTEP = true },
+			mutate: func(in *GuardInputs) { in.EnableVTEP = true },
 			errMsg: "VTEP",
 		},
 		{
 			name:   "non-default max connected clusters",
-			mutate: func(in *guardInputs) { in.MaxConnectedClusters = 511 },
+			mutate: func(in *GuardInputs) { in.MaxConnectedClusters = 511 },
 			errMsg: "--max-connected-clusters",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := validInputs()
 			tc.mutate(&in)
-			err := validate(in)
+			err := Validate(in)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.errMsg)
 		})
@@ -116,7 +116,7 @@ func TestGuardsReportAllConflicts(t *testing.T) {
 	in.EnableVTEP = true
 	in.RoutingMode = option.RoutingModeNative
 
-	err := validate(in)
+	err := Validate(in)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "IPsec")
 	require.Contains(t, err.Error(), "VTEP")

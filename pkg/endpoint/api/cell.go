@@ -21,6 +21,7 @@ import (
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/promise"
 	"github.com/cilium/cilium/pkg/rate"
+	"github.com/cilium/cilium/pkg/tenancy"
 )
 
 const endpointAPIModuleID = "endpoint-api"
@@ -67,6 +68,7 @@ type endpointAPIManagerParams struct {
 	Clientset        k8sClient.Clientset
 	CNIConfigManager cni.CNIConfigManager
 	IPAM             *ipam.IPAM
+	Tenancy          tenancy.Resolver
 }
 
 func newEndpointAPIManager(params endpointAPIManagerParams) EndpointAPIManager {
@@ -80,6 +82,7 @@ func newEndpointAPIManager(params endpointAPIManagerParams) EndpointAPIManager {
 		clientset:         params.Clientset,
 		cniConfigManager:  params.CNIConfigManager,
 		ipam:              params.IPAM,
+		tenancy:           params.Tenancy,
 	}
 }
 

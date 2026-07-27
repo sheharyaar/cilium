@@ -340,6 +340,14 @@ type Endpoint struct {
 	// Immutable after Endpoint creation.
 	K8sUID string
 
+	// TenantID is the datapath tenant (VPC) the endpoint belongs to, resolved
+	// from K8sNamespace at creation. 0 means the default VPC, which is the only
+	// value ever seen when tenancy is disabled.
+	//
+	// Immutable after Endpoint creation: a namespace moving between tenants
+	// does not migrate live endpoints, they keep their tenant until recreated.
+	TenantID uint16
+
 	// lockdown indicates whether the endpoint is locked down or not do to
 	// a policy map overflow.
 	lockdown bool
@@ -1347,6 +1355,13 @@ func (e *Endpoint) GetK8sUID() string {
 	// const after creation
 	uid := e.K8sUID
 	return uid
+}
+
+// GetTenantID returns the datapath tenant (VPC) of the endpoint. 0 is the
+// default VPC.
+func (e *Endpoint) GetTenantID() uint16 {
+	// const after creation
+	return e.TenantID
 }
 
 // SetPod sets the pod related to this endpoint.

@@ -85,7 +85,7 @@ import (
 	"github.com/cilium/cilium/pkg/source"
 	"github.com/cilium/cilium/pkg/status"
 	"github.com/cilium/cilium/pkg/svcrouteconfig"
-	"github.com/cilium/cilium/pkg/tenancy"
+	tenancycell "github.com/cilium/cilium/pkg/tenancy/cell"
 	"github.com/cilium/cilium/pkg/ztunnel"
 )
 
@@ -280,7 +280,7 @@ var (
 
 		// Tenancy resolves the tenant (VPC) a namespace belongs to and gates
 		// the feature combinations overlapping-CIDR tenancy supports.
-		tenancy.Cell,
+		tenancycell.Cell,
 
 		// Egress Gateway allows originating traffic from specific IPv4 addresses.
 		egressgateway.Cell,
