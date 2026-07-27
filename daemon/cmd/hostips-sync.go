@@ -194,7 +194,8 @@ func (s *syncHostIPs) sync(addrs iter.Seq2[tables.NodeAddress, statedb.Revision]
 			}
 		}
 
-		delete(existingEndpoints, ipIDLblsPair.IP)
+		// Host and world IPs are node addresses, always in the default VPC.
+		delete(existingEndpoints, lxcmap.NewEndpointAddr(ipIDLblsPair.IP))
 
 		lbls := ipIDLblsPair.Labels
 		if ipIDLblsPair.ID.IsWorld() {
@@ -208,17 +209,17 @@ func (s *syncHostIPs) sync(addrs iter.Seq2[tables.NodeAddress, statedb.Revision]
 
 	// existingEndpoints is a map from endpoint IP to endpoint info. Referring
 	// to the key as host IP here because we only care about the host endpoint.
-	for addr, info := range existingEndpoints {
-		if addr.IsValid() && info.IsHost() {
-			if err := s.params.LXCMap.DeleteEntry(addr); err != nil {
+	for ea, info := range existingEndpoints {
+		if ea.Addr.IsValid() && info.IsHost() {
+			if err := s.params.LXCMap.DeleteEntry(ea); err != nil {
 				return fmt.Errorf("unable to delete obsolete host IP: %w", err)
 			} else {
 				s.params.Logger.Debug(
 					"Removed outdated host IP from endpoint map",
-					logfields.IPAddr, addr,
+					logfields.IPAddr, ea.Addr,
 				)
 			}
-			p := cmtypes.NewLocalPrefixCluster(netip.PrefixFrom(addr, addr.BitLen()))
+			p := cmtypes.NewLocalPrefixCluster(netip.PrefixFrom(ea.Addr, ea.Addr.BitLen()))
 			s.params.IPCache.RemoveMetadata(p, daemonResourceID, labels.LabelHost)
 		}
 	}

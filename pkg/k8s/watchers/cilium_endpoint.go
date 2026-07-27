@@ -26,6 +26,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/tenancy"
 	ciliumTypes "github.com/cilium/cilium/pkg/types"
 	"github.com/cilium/cilium/pkg/u8proto"
 	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
@@ -45,6 +46,7 @@ type k8sCiliumEndpointsWatcherParams struct {
 	IPCache         *ipcache.IPCache
 	WgConfig        wgTypes.WireguardConfig
 	IPSecConfig     datapath.IPsecConfig
+	Tenancy         tenancy.Resolver
 }
 
 func newK8sCiliumEndpointsWatcher(params k8sCiliumEndpointsWatcherParams) *K8sCiliumEndpointsWatcher {
@@ -58,6 +60,7 @@ func newK8sCiliumEndpointsWatcher(params k8sCiliumEndpointsWatcherParams) *K8sCi
 		ipcache:           params.IPCache,
 		wgConfig:          params.WgConfig,
 		ipsecConfig:       params.IPSecConfig,
+		tenancy:           params.Tenancy,
 	}
 }
 
@@ -77,6 +80,7 @@ type K8sCiliumEndpointsWatcher struct {
 	ipcache         ipcacheManager
 	wgConfig        wgTypes.WireguardConfig
 	ipsecConfig     datapath.IPsecConfig
+	tenancy         tenancy.Resolver
 
 	resources agentK8s.Resources
 }
@@ -158,13 +162,17 @@ func (k *K8sCiliumEndpointsWatcher) endpointUpdated(oldEndpoint, endpoint *types
 					}
 				}
 				if !v4Added {
-					portsChanged := k.ipcache.DeleteOnMetadataMatch(oldPair.IPV4, source.CustomResource, endpoint.Namespace, endpoint.Name)
+					portsChanged := k.ipcache.DeleteOnMetadataMatch(
+						tenantIPCacheKey(k.tenancy, endpoint.Namespace, oldPair.IPV4),
+						source.CustomResource, endpoint.Namespace, endpoint.Name)
 					if portsChanged {
 						namedPortsChanged = true
 					}
 				}
 				if !v6Added {
-					portsChanged := k.ipcache.DeleteOnMetadataMatch(oldPair.IPV6, source.CustomResource, endpoint.Namespace, endpoint.Name)
+					portsChanged := k.ipcache.DeleteOnMetadataMatch(
+						tenantIPCacheKey(k.tenancy, endpoint.Namespace, oldPair.IPV6),
+						source.CustomResource, endpoint.Namespace, endpoint.Name)
 					if portsChanged {
 						namedPortsChanged = true
 					}
@@ -226,7 +234,9 @@ func (k *K8sCiliumEndpointsWatcher) endpointUpdated(oldEndpoint, endpoint *types
 	for _, pair := range endpoint.Networking.Addressing {
 		if pair.IPV4 != "" {
 			ipsAdded = append(ipsAdded, pair.IPV4)
-			portsChanged, _ := k.ipcache.Upsert(pair.IPV4, nodeIP, encryptionKey, k8sMeta,
+			portsChanged, _ := k.ipcache.Upsert(
+				tenantIPCacheKey(k.tenancy, endpoint.Namespace, pair.IPV4),
+				nodeIP, encryptionKey, k8sMeta,
 				ipcache.Identity{ID: id, Source: source.CustomResource})
 			if portsChanged {
 				namedPortsChanged = true
@@ -235,7 +245,9 @@ func (k *K8sCiliumEndpointsWatcher) endpointUpdated(oldEndpoint, endpoint *types
 
 		if pair.IPV6 != "" {
 			ipsAdded = append(ipsAdded, pair.IPV6)
-			portsChanged, _ := k.ipcache.Upsert(pair.IPV6, nodeIP, encryptionKey, k8sMeta,
+			portsChanged, _ := k.ipcache.Upsert(
+				tenantIPCacheKey(k.tenancy, endpoint.Namespace, pair.IPV6),
+				nodeIP, encryptionKey, k8sMeta,
 				ipcache.Identity{ID: id, Source: source.CustomResource})
 			if portsChanged {
 				namedPortsChanged = true
@@ -249,14 +261,18 @@ func (k *K8sCiliumEndpointsWatcher) endpointDeleted(endpoint *types.CiliumEndpoi
 		namedPortsChanged := false
 		for _, pair := range endpoint.Networking.Addressing {
 			if pair.IPV4 != "" {
-				portsChanged := k.ipcache.DeleteOnMetadataMatch(pair.IPV4, source.CustomResource, endpoint.Namespace, endpoint.Name)
+				portsChanged := k.ipcache.DeleteOnMetadataMatch(
+					tenantIPCacheKey(k.tenancy, endpoint.Namespace, pair.IPV4),
+					source.CustomResource, endpoint.Namespace, endpoint.Name)
 				if portsChanged {
 					namedPortsChanged = true
 				}
 			}
 
 			if pair.IPV6 != "" {
-				portsChanged := k.ipcache.DeleteOnMetadataMatch(pair.IPV6, source.CustomResource, endpoint.Namespace, endpoint.Name)
+				portsChanged := k.ipcache.DeleteOnMetadataMatch(
+					tenantIPCacheKey(k.tenancy, endpoint.Namespace, pair.IPV6),
+					source.CustomResource, endpoint.Namespace, endpoint.Name)
 				if portsChanged {
 					namedPortsChanged = true
 				}

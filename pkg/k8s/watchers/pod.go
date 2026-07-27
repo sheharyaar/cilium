@@ -50,6 +50,7 @@ import (
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/tenancy"
 	"github.com/cilium/cilium/pkg/time"
 
 	ciliumTypes "github.com/cilium/cilium/pkg/types"
@@ -83,6 +84,7 @@ type k8sPodWatcherParams struct {
 	WgConfig           wgTypes.WireguardConfig
 	IPSecConfig        datapath.IPsecConfig
 	HostNetworkManager datapath.IptablesManager
+	Tenancy            tenancy.Resolver
 }
 
 func newK8sPodWatcher(params k8sPodWatcherParams) *K8sPodWatcher {
@@ -104,6 +106,7 @@ func newK8sPodWatcher(params k8sPodWatcherParams) *K8sPodWatcher {
 		wgConfig:           params.WgConfig,
 		ipsecConfig:        params.IPSecConfig,
 		hostNetworkManager: params.HostNetworkManager,
+		tenancy:            params.Tenancy,
 
 		controllersStarted: make(chan struct{}),
 	}
@@ -134,6 +137,7 @@ type K8sPodWatcher struct {
 	wgConfig           wgTypes.WireguardConfig
 	ipsecConfig        datapath.IPsecConfig
 	hostNetworkManager hostNetworkManager
+	tenancy            tenancy.Resolver
 
 	// controllersStarted is a channel that is closed when all watchers that do not depend on
 	// local node configuration have been started
@@ -554,7 +558,9 @@ func (k *K8sPodWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPo
 					found = true
 				}
 				if !found {
-					npc := k.ipcache.Delete(oldPodIP, source.Kubernetes)
+					npc := k.ipcache.Delete(
+						tenantIPCacheKey(k.tenancy, newPod.Namespace, oldPodIP),
+						source.Kubernetes)
 					if npc {
 						namedPortsChanged = true
 					}
@@ -614,10 +620,12 @@ func (k *K8sPodWatcher) updatePodHostData(oldPod, newPod *slim_corev1.Pod, oldPo
 		// Initial mapping of podIP <-> hostIP <-> identity. The mapping is
 		// later updated once the allocator has determined the real identity.
 		// If the endpoint remains unmanaged, the identity remains untouched.
-		npc, err := k.ipcache.Upsert(podIP, hostIP, hostKey, k8sMeta, ipcache.Identity{
-			ID:     identity.ReservedIdentityUnmanaged,
-			Source: source.Kubernetes,
-		})
+		npc, err := k.ipcache.Upsert(
+			tenantIPCacheKey(k.tenancy, newPod.Namespace, podIP),
+			hostIP, hostKey, k8sMeta, ipcache.Identity{
+				ID:     identity.ReservedIdentityUnmanaged,
+				Source: source.Kubernetes,
+			})
 		if npc {
 			namedPortsChanged = true
 		}
@@ -669,7 +677,9 @@ func (k *K8sPodWatcher) deletePodHostData(pod *slim_corev1.Pod) (bool, error) {
 		// a small race condition exists here as deletion could occur in
 		// parallel based on another event but it doesn't matter as the
 		// identity is going away
-		id, exists := k.ipcache.LookupByIP(podIP)
+		ipcacheKey := tenantIPCacheKey(k.tenancy, pod.Namespace, podIP)
+
+		id, exists := k.ipcache.LookupByIP(ipcacheKey)
 		if !exists {
 			skipped = true
 			errs = append(errs, fmt.Sprintf("identity for IP %s does not exist in case", podIP))
@@ -682,7 +692,7 @@ func (k *K8sPodWatcher) deletePodHostData(pod *slim_corev1.Pod) (bool, error) {
 			continue
 		}
 
-		k.ipcache.DeleteOnMetadataMatch(podIP, source.Kubernetes, pod.Namespace, pod.Name)
+		k.ipcache.DeleteOnMetadataMatch(ipcacheKey, source.Kubernetes, pod.Namespace, pod.Name)
 	}
 
 	if len(errs) != 0 {

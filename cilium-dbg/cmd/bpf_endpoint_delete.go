@@ -4,7 +4,10 @@
 package cmd
 
 import (
+	"fmt"
 	"net/netip"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,7 +18,13 @@ import (
 var bpfEndpointDeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete local endpoint entries",
-	Args:  cobra.ExactArgs(1),
+	Long: `Delete a local endpoint entry.
+
+The endpoint is identified by its IP address. With multi-tenancy enabled the same
+IP may exist in several tenants, so the entry can be scoped to one of them by
+appending "@<tenantID>", for example 10.10.0.5@3. Without a tenant the entry in
+the default VPC is deleted.`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		common.RequireRootPrivilege("cilium bpf endpoint delete")
 
@@ -23,9 +32,9 @@ var bpfEndpointDeleteCmd = &cobra.Command{
 			Fatalf("Please specify the endpoint to delete")
 		}
 
-		addr, err := netip.ParseAddr(args[0])
+		ea, err := parseEndpointAddr(args[0])
 		if err != nil {
-			Fatalf("Unable to parse IP '%s': %v", args[0], err)
+			Fatalf("Unable to parse endpoint '%s': %v", args[0], err)
 		}
 
 		m, err := lxcmap.OpenMap(log)
@@ -33,10 +42,32 @@ var bpfEndpointDeleteCmd = &cobra.Command{
 			Fatalf("Unable to open map: %s", err)
 		}
 
-		if err := m.DeleteEntry(addr); err != nil {
+		if err := m.DeleteEntry(ea); err != nil {
 			Fatalf("Unable to delete endpoint entry: %s", err)
 		}
 	},
+}
+
+// parseEndpointAddr parses an endpoint map address, either a bare IP or
+// "<ip>@<tenantID>".
+func parseEndpointAddr(arg string) (lxcmap.EndpointAddr, error) {
+	ipStr, tenantStr, hasTenant := strings.Cut(arg, "@")
+
+	addr, err := netip.ParseAddr(ipStr)
+	if err != nil {
+		return lxcmap.EndpointAddr{}, fmt.Errorf("invalid IP %q: %w", ipStr, err)
+	}
+
+	if !hasTenant {
+		return lxcmap.NewEndpointAddr(addr), nil
+	}
+
+	tenantID, err := strconv.ParseUint(tenantStr, 10, 16)
+	if err != nil {
+		return lxcmap.EndpointAddr{}, fmt.Errorf("invalid tenant ID %q: %w", tenantStr, err)
+	}
+
+	return lxcmap.EndpointAddr{Addr: addr, TenantID: uint16(tenantID)}, nil
 }
 
 func init() {

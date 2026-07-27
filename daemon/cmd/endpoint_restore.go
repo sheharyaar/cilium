@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -454,7 +453,7 @@ func (r *endpointRestorer) RestoreOldEndpoints() error {
 	}
 
 	var (
-		existingEndpoints map[netip.Addr]lxcmap.EndpointInfo
+		existingEndpoints map[lxcmap.EndpointAddr]lxcmap.EndpointInfo
 		err               error
 	)
 
@@ -499,8 +498,12 @@ func (r *endpointRestorer) RestoreOldEndpoints() error {
 		r.restoreState.restored = append(r.restoreState.restored, ep)
 
 		if existingEndpoints != nil {
-			delete(existingEndpoints, ep.IPv4Address())
-			delete(existingEndpoints, ep.IPv6Address())
+			// Claim the entries by address *and* tenant. Claiming by address
+			// alone would let a restored endpoint in one tenant protect an
+			// identically addressed stale entry in another, leaving it behind.
+			tenantID := ep.GetTenantID()
+			delete(existingEndpoints, lxcmap.EndpointAddr{Addr: ep.IPv4Address(), TenantID: tenantID})
+			delete(existingEndpoints, lxcmap.EndpointAddr{Addr: ep.IPv6Address(), TenantID: tenantID})
 		}
 	}
 
@@ -510,11 +513,11 @@ func (r *endpointRestorer) RestoreOldEndpoints() error {
 		logfields.Failed, failed,
 	)
 
-	for addr, info := range existingEndpoints {
-		if addr.IsValid() && !info.IsHost() {
-			if err := r.lxcMap.DeleteEntry(addr); err != nil {
+	for ea, info := range existingEndpoints {
+		if ea.Addr.IsValid() && !info.IsHost() {
+			if err := r.lxcMap.DeleteEntry(ea); err != nil {
 				r.logger.Warn("Unable to delete obsolete endpoint from BPF map",
-					logfields.IPAddr, addr,
+					logfields.IPAddr, ea,
 					logfields.Error, err,
 				)
 			} else {

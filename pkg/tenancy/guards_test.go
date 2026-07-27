@@ -22,6 +22,7 @@ func validInputs() GuardInputs {
 		RoutingMode:            option.RoutingModeTunnel,
 		IPAM:                   ipamOption.IPAMMultiPool,
 		IdentityManagementMode: option.IdentityManagementModeAgent,
+		IdentityAllocationMode: option.IdentityAllocationModeCRD,
 	}
 }
 
@@ -105,6 +106,11 @@ func TestGuardsRejectConflicts(t *testing.T) {
 			name:   "operator-managed identities",
 			mutate: func(in *GuardInputs) { in.IdentityManagementMode = option.IdentityManagementModeOperator },
 			errMsg: "--identity-management-mode=agent",
+		},
+		{
+			name:   "kvstore identity allocation",
+			mutate: func(in *GuardInputs) { in.IdentityAllocationMode = option.IdentityAllocationModeKVstore },
+			errMsg: "--identity-allocation-mode=crd",
 		},
 		{
 			name:   "identities managed by both",

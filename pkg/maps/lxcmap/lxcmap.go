@@ -35,7 +35,7 @@ type Map interface {
 	SyncHostEntry(addr netip.Addr) (bool, error)
 
 	// DeleteEntry deletes a single map entry
-	DeleteEntry(addr netip.Addr) error
+	DeleteEntry(ea EndpointAddr) error
 
 	// DeleteElement deletes the endpoint using all keys which represent the
 	// endpoint. It returns the number of errors encountered during deletion.
@@ -45,8 +45,9 @@ type Map interface {
 	// data stored in BPF map.
 	Dump(hash map[string][]string) error
 
-	// DumpToMap dumps the contents of the lxcmap into a map and returns it
-	DumpToMap() (map[netip.Addr]EndpointInfo, error)
+	// DumpToMap dumps the contents of the lxcmap into a map and returns it,
+	// keyed by address and tenant.
+	DumpToMap() (map[EndpointAddr]EndpointInfo, error)
 }
 
 type lxcMap struct {
@@ -126,18 +127,29 @@ type EndpointFrontend interface {
 	SkipMasqueradeV4() bool
 	// SkipMasqueradeV6 indicates whether this endpoint should skip IPv6 masquerade for remote traffic
 	SkipMasqueradeV6() bool
+	// GetTenantID returns the tenant (VPC) the endpoint belongs to. 0 is the
+	// default VPC.
+	GetTenantID() uint16
 }
 
 // getBPFKeys returns all keys which should represent this endpoint in the BPF
-// endpoints map
+// endpoints map.
+//
+// WriteEndpoint and DeleteElement both go through here, so the write and delete
+// keys cannot drift apart. That matters because they are handed different
+// objects: the regeneration snapshot on write and the Endpoint itself on delete.
+// Both report the same tenant, since the tenant is immutable after endpoint
+// creation and the snapshot copies it.
 func (m *lxcMap) getBPFKeys(e EndpointFrontend) []*EndpointKey {
+	tenantID := e.GetTenantID()
+
 	keys := []*EndpointKey{}
 	if e.IPv6Address().IsValid() {
-		keys = append(keys, newEndpointKey(e.IPv6Address()))
+		keys = append(keys, newEndpointKey(e.IPv6Address(), tenantID))
 	}
 
 	if e.IPv4Address().IsValid() {
-		keys = append(keys, newEndpointKey(e.IPv4Address()))
+		keys = append(keys, newEndpointKey(e.IPv4Address(), tenantID))
 	}
 
 	return keys
@@ -205,12 +217,42 @@ type EndpointKey struct {
 	bpf.EndpointKey
 }
 
-// newEndpointKey returns an EndpointKey based on the provided IP address. The
-// address family is automatically detected
-func newEndpointKey(addr netip.Addr) *EndpointKey {
+// newEndpointKey returns an EndpointKey based on the provided IP address and
+// tenant. The address family is automatically detected.
+//
+// The key's cluster ID field carries the tenant, which is what lets two tenants
+// hold the same pod IP: the datapath looks the endpoint up as (IP, tenant)
+// rather than by IP alone. Tenant 0 is the default VPC and yields exactly the
+// key this produced before tenancy existed.
+func newEndpointKey(addr netip.Addr, tenantID uint16) *EndpointKey {
 	return &EndpointKey{
-		EndpointKey: bpf.NewEndpointKey(addr, 0),
+		EndpointKey: bpf.NewEndpointKey(addr, tenantID),
 	}
+}
+
+// EndpointAddr identifies one entry in the endpoint map: an address within a
+// tenant's routing domain.
+//
+// Dumping and deleting must be keyed on both, not on the address alone.
+// Otherwise two tenants sharing a pod IP collapse into a single entry, and
+// restore-time cleanup either deletes a live endpoint's entry or fails to
+// notice a stale one.
+type EndpointAddr struct {
+	Addr     netip.Addr
+	TenantID uint16
+}
+
+// NewEndpointAddr returns the endpoint map identity of an address in the default
+// VPC.
+func NewEndpointAddr(addr netip.Addr) EndpointAddr {
+	return EndpointAddr{Addr: addr}
+}
+
+func (e EndpointAddr) String() string {
+	if e.TenantID == 0 {
+		return e.Addr.String()
+	}
+	return fmt.Sprintf("%s@%d", e.Addr, e.TenantID)
 }
 
 func (k *EndpointKey) New() bpf.MapKey { return &EndpointKey{} }
@@ -261,15 +303,18 @@ func (m *lxcMap) WriteEndpoint(f EndpointFrontend) error {
 	return nil
 }
 
-// addHostEntry adds a special endpoint which represents the local host
+// addHostEntry adds a special endpoint which represents the local host.
+//
+// Host IPs live in the default VPC: they are node addresses, not pod addresses,
+// and are unique cluster-wide regardless of tenancy.
 func (m *lxcMap) addHostEntry(addr netip.Addr) error {
-	key := newEndpointKey(addr)
+	key := newEndpointKey(addr, 0)
 	ep := &EndpointInfo{Flags: EndpointFlagHost}
 	return m.bpfMap.Update(key, ep)
 }
 
 func (m *lxcMap) SyncHostEntry(addr netip.Addr) (bool, error) {
-	key := newEndpointKey(addr)
+	key := newEndpointKey(addr, 0)
 	value, err := m.bpfMap.Lookup(key)
 	if err != nil || value.(*EndpointInfo).Flags&EndpointFlagHost == 0 {
 		err = m.addHostEntry(addr)
@@ -280,8 +325,8 @@ func (m *lxcMap) SyncHostEntry(addr netip.Addr) (bool, error) {
 	return false, err
 }
 
-func (m *lxcMap) DeleteEntry(addr netip.Addr) error {
-	return m.bpfMap.Delete(newEndpointKey(addr))
+func (m *lxcMap) DeleteEntry(ea EndpointAddr) error {
+	return m.bpfMap.Delete(newEndpointKey(ea.Addr, ea.TenantID))
 }
 
 func (m *lxcMap) DeleteElement(logger *slog.Logger, f EndpointFrontend) []error {
@@ -299,12 +344,15 @@ func (m *lxcMap) Dump(hash map[string][]string) error {
 	return m.bpfMap.Dump(hash)
 }
 
-func (m *lxcMap) DumpToMap() (map[netip.Addr]EndpointInfo, error) {
-	result := map[netip.Addr]EndpointInfo{}
+func (m *lxcMap) DumpToMap() (map[EndpointAddr]EndpointInfo, error) {
+	result := map[EndpointAddr]EndpointInfo{}
 	callback := func(key bpf.MapKey, value bpf.MapValue) {
 		if info, ok := value.(*EndpointInfo); ok {
 			if endpointKey, ok := key.(*EndpointKey); ok {
-				result[endpointKey.ToAddr()] = *info
+				result[EndpointAddr{
+					Addr:     endpointKey.ToAddr(),
+					TenantID: endpointKey.ClusterID,
+				}] = *info
 			}
 		}
 	}

@@ -23,6 +23,7 @@ type GuardInputs struct {
 	RoutingMode            string
 	IPAM                   string
 	IdentityManagementMode string
+	IdentityAllocationMode string
 
 	EnableHostFirewall  bool
 	EnableEgressGateway bool
@@ -74,6 +75,17 @@ func Validate(in GuardInputs) error {
 		errs = append(errs, fmt.Errorf(
 			"--%s requires --%s=%s, got %q",
 			EnableTenancy, option.IPAM, ipamOption.IPAMMultiPool, in.IPAM))
+	}
+
+	// Cross-node propagation of a tenant pod IP goes through the CiliumEndpoint
+	// watcher, which annotates the ipcache key with the tenant. The kvstore IP to
+	// identity syncher takes a bare address and has no tenant to annotate with,
+	// so in a kvstore mode remote agents would learn tenant pod IPs as belonging
+	// to the default VPC.
+	if in.IdentityAllocationMode != option.IdentityAllocationModeCRD {
+		errs = append(errs, fmt.Errorf(
+			"--%s requires --%s=%s, got %q: the kvstore IP to identity syncher cannot carry a tenant",
+			EnableTenancy, option.IdentityAllocationMode, option.IdentityAllocationModeCRD, in.IdentityAllocationMode))
 	}
 
 	// The tenant label is injected into identity labels by the agent, which is
