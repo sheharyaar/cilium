@@ -121,7 +121,7 @@ func (p tenancyParams) watchTenants(ctx context.Context) error {
 				// tenant rather than retrying forever.
 				p.Logger.Error("Ignoring CiliumTenant with invalid namespaceSelector",
 					logfields.Error, err,
-					"tenant", ev.Object.Name,
+					logfields.Tenant, ev.Object.Name,
 				)
 				p.Resolver.DeleteTenant(ev.Object.Name)
 				err = nil

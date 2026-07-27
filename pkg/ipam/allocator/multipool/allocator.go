@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/ipam"
 	"github.com/cilium/cilium/pkg/ipam/allocator"
 	cilium_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
@@ -52,6 +53,10 @@ func (a *Allocator) UpsertPool(ctx context.Context, pool *cilium_v2alpha1.Cilium
 		}
 	}
 
+	// A pool is bound to a tenant by label. Pools of one tenant must not
+	// overlap, pools of different tenants may.
+	tenant := pool.Labels[annotation.TenancyPoolTenant]
+
 	a.logger.Debug(
 		"upserting pool",
 		logfields.PoolName, pool.Name,
@@ -60,6 +65,7 @@ func (a *Allocator) UpsertPool(ctx context.Context, pool *cilium_v2alpha1.Cilium
 		logfields.IPv6CIDRs, ipv6CIDRs,
 		logfields.IPv6MaskSize, ipv6MaskSize,
 		logfields.Selector, pool.Spec.PodSelector,
+		logfields.Tenant, tenant,
 	)
 
 	return a.poolAlloc.UpsertPool(
@@ -68,6 +74,7 @@ func (a *Allocator) UpsertPool(ctx context.Context, pool *cilium_v2alpha1.Cilium
 		ipv4MaskSize,
 		ipv6CIDRs,
 		ipv6MaskSize,
+		WithTenant(tenant),
 	)
 }
 

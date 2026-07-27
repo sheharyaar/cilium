@@ -399,7 +399,11 @@ The following limitations apply to Cilium running in Multi-Pool IPAM mode:
 .. warning::
    - IPAM pools with overlapping CIDRs are not supported. Each pod IP must be
      unique in the cluster due the way Cilium determines the security identity
-     of endpoints by way of the IPCache.
+     of endpoints by way of the IPCache. The exception is pools bound to
+     different tenants via the ``tenancy.cilium.io/tenant`` label when
+     ``--enable-tenancy`` is set: each tenant is an isolated routing domain, so
+     its pod IPs only need to be unique within that tenant. Pools of the *same*
+     tenant are rejected if their CIDRs overlap.
    - iptables-based masquerading requires ``egressMasqueradeInterfaces`` to be set
      (see masquerading :ref:`masq_modes` and :gh-issue:`22273` for details).
      Alternatively, eBPF-based masquerading is fully supported and may be used instead.

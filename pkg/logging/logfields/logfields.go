@@ -1143,6 +1143,12 @@ const (
 
 	PoolName = "poolName"
 
+	// Tenant is the name of a CiliumTenant.
+	Tenant = "tenant"
+
+	// TenantID is the datapath tenant (VPC) identifier.
+	TenantID = "tenantID"
+
 	MaxRetries = "maxRetries"
 
 	Retries = "retries"

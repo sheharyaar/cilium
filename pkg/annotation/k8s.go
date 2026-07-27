@@ -41,6 +41,15 @@ const (
 	// CECPrefix is the common prefix for CEC related annotations.
 	CECPrefix = "cec.cilium.io"
 
+	// TenancyPrefix is the common prefix for multi-tenancy related labels.
+	TenancyPrefix = "tenancy.cilium.io"
+
+	// TenancyPoolTenant is a label on a CiliumPodIPPool binding the pool to a
+	// CiliumTenant by name. Pools of the same tenant must not have overlapping
+	// CIDRs; pools of different tenants may, since a tenant is an isolated
+	// routing domain. An absent or empty label means the default VPC.
+	TenancyPoolTenant = TenancyPrefix + "/tenant"
+
 	// PodAnnotationMAC is used to store the MAC address of the Pod.
 	PodAnnotationMAC = CNIPrefix + "/mac-address"
 

@@ -84,8 +84,8 @@ func (r *reconciler) upsert(ctx context.Context, tenant *cilium_api_v2alpha1.Cil
 		if err := r.ids.restore(id); err != nil {
 			r.logger.WarnContext(ctx, "Reallocating conflicting tenant ID",
 				logfields.Error, err,
-				"tenant", name,
-				"tenantID", id,
+				logfields.Tenant, name,
+				logfields.TenantID, id,
 			)
 			delete(r.assigned, name)
 			return r.allocateFor(ctx, tenant)
@@ -137,7 +137,7 @@ func (r *reconciler) allocateFor(ctx context.Context, cached *cilium_api_v2alpha
 		}
 		r.logger.ErrorContext(ctx, "No tenant ID available",
 			logfields.Error, err,
-			"tenant", tenant.Name,
+			logfields.Tenant, tenant.Name,
 		)
 		return nil
 	}
@@ -158,8 +158,8 @@ func (r *reconciler) allocateFor(ctx context.Context, cached *cilium_api_v2alpha
 
 	r.assigned[tenant.Name] = id
 	r.logger.InfoContext(ctx, "Allocated tenant ID",
-		"tenant", tenant.Name,
-		"tenantID", id,
+		logfields.Tenant, tenant.Name,
+		logfields.TenantID, id,
 	)
 	return nil
 }

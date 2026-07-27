@@ -29,6 +29,24 @@ type cidrPool struct {
 	v6         []cidralloc.CIDRAllocator
 	v4MaskSize int
 	v6MaskSize int
+
+	// tenant is the name of the CiliumTenant this pool belongs to, taken from
+	// the pool's tenancy label. Empty means the default VPC.
+	tenant string
+}
+
+// PoolOption configures optional properties of a pool on upsert.
+type PoolOption func(*poolOptions)
+
+type poolOptions struct {
+	tenant string
+}
+
+// WithTenant binds the pool to a tenant (VPC). Pools of the same tenant must
+// not overlap; pools of different tenants may, because a tenant is a separate
+// routing domain.
+func WithTenant(tenant string) PoolOption {
+	return func(o *poolOptions) { o.tenant = tenant }
 }
 
 type cidrSet map[netip.Prefix]struct{}
@@ -255,9 +273,14 @@ func parseCIDRStrings(cidrStrs []string) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
-func (p *PoolAllocator) UpsertPool(poolName string, ipv4CIDRs []string, ipv4MaskSize int, ipv6CIDRs []string, ipv6MaskSize int) error {
+func (p *PoolAllocator) UpsertPool(poolName string, ipv4CIDRs []string, ipv4MaskSize int, ipv6CIDRs []string, ipv6MaskSize int, opts ...PoolOption) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	var options poolOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 
 	pool, exists := p.pools[poolName]
 	if exists && ipv4MaskSize != pool.v4MaskSize {
@@ -274,6 +297,12 @@ func (p *PoolAllocator) UpsertPool(poolName string, ipv4CIDRs []string, ipv4Mask
 	ipv6Prefixes, err := parseCIDRStrings(ipv6CIDRs)
 	if err != nil {
 		return fmt.Errorf("invalid IPv6 CIDR: %w", err)
+	}
+
+	// Reject overlaps before touching any state, so a rejected pool leaves the
+	// allocator exactly as it was.
+	if err := p.checkTenantOverlap(poolName, options.tenant, ipv4Prefixes, ipv6Prefixes); err != nil {
+		return err
 	}
 
 	var v4Prev []cidralloc.CIDRAllocator
@@ -299,9 +328,74 @@ func (p *PoolAllocator) UpsertPool(poolName string, ipv4CIDRs []string, ipv4Mask
 		v6:         v6,
 		v4MaskSize: ipv4MaskSize,
 		v6MaskSize: ipv6MaskSize,
+		tenant:     options.tenant,
 	}
 
 	return p.reconcileOrphanCIDRs(poolName, v4, v6)
+}
+
+// checkTenantOverlap rejects CIDRs that overlap within a single tenant.
+//
+// Overlapping pod CIDRs are the whole point of tenancy, so overlap *across*
+// tenants is allowed: each tenant is a separate routing domain, disambiguated in
+// the datapath by the tenant ID. Within one routing domain an overlap would mean
+// two pools handing out the same address, which is always wrong.
+//
+// Pools with no tenant label are not checked against each other. Multi-pool IPAM
+// has never enforced this for the default VPC (it is only documented as
+// unsupported), and starting to reject it here would break clusters that do not
+// use tenancy at all. Callers must hold p.mutex.
+func (p *PoolAllocator) checkTenantOverlap(poolName, tenant string, ipv4Prefixes, ipv6Prefixes []netip.Prefix) error {
+	if tenant == "" {
+		return nil
+	}
+
+	newPrefixes := make([]netip.Prefix, 0, len(ipv4Prefixes)+len(ipv6Prefixes))
+	newPrefixes = append(newPrefixes, ipv4Prefixes...)
+	newPrefixes = append(newPrefixes, ipv6Prefixes...)
+
+	// A pool must be internally consistent before it is compared with others.
+	for i, a := range newPrefixes {
+		for _, b := range newPrefixes[i+1:] {
+			if a.Overlaps(b) {
+				return fmt.Errorf("pool %q: CIDR %s overlaps CIDR %s in the same pool",
+					poolName, b, a)
+			}
+		}
+	}
+
+	for otherName, other := range p.pools {
+		// Re-upserting a pool must not conflict with its own previous CIDRs.
+		if otherName == poolName {
+			continue
+		}
+		if other.tenant != tenant {
+			continue
+		}
+
+		for _, existing := range other.prefixes() {
+			for _, want := range newPrefixes {
+				if want.Overlaps(existing) {
+					return fmt.Errorf("pool %q: CIDR %s overlaps CIDR %s of pool %q within tenant %q",
+						poolName, want, existing, otherName, tenant)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// prefixes returns every CIDR backing the pool, across both address families.
+func (c cidrPool) prefixes() []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, len(c.v4)+len(c.v6))
+	for _, alloc := range c.v4 {
+		prefixes = append(prefixes, alloc.Prefix())
+	}
+	for _, alloc := range c.v6 {
+		prefixes = append(prefixes, alloc.Prefix())
+	}
+	return prefixes
 }
 
 // DeletePool deletes a pool from p. No new allocations to nodes will be made
