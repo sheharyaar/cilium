@@ -22,6 +22,8 @@ func (s stubResolver) TenantIDForNamespace(ns string) uint16 { return s.ids[ns] 
 
 func (s stubResolver) TenantNameForNamespace(ns string) string { return s.names[ns] }
 
+func (s stubResolver) TenantIDForName(name string) uint16 { return 0 }
+
 func TestResolveTenantID(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

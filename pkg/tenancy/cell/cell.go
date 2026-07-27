@@ -10,6 +10,7 @@ package cell
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/cilium/hive/cell"
@@ -20,6 +21,7 @@ import (
 	cmcommon "github.com/cilium/cilium/pkg/clustermesh/common"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	ipseccfg "github.com/cilium/cilium/pkg/datapath/linux/ipsec"
+	"github.com/cilium/cilium/pkg/identity/cache"
 	identitycachecell "github.com/cilium/cilium/pkg/identity/cache/cell"
 	k8sresources "github.com/cilium/cilium/pkg/k8s"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
@@ -74,6 +76,16 @@ type tenancyParams struct {
 	IPsecUserConfig ipseccfg.UserConfig
 	WGUserConfig    wgcfg.UserConfig
 	IdentityCfg     identitycachecell.SharedConfig
+
+	IdentityAllocator identitycachecell.CachingIdentityAllocator
+}
+
+// tenantIDLookupSetter is implemented by the concrete caching identity
+// allocator. It is asserted rather than added to the CachingIdentityAllocator
+// interface so that the mock allocators used in tests do not all have to grow
+// the method.
+type tenantIDLookupSetter interface {
+	SetTenantIDLookup(cache.TenantIDLookup)
 }
 
 func registerTenancy(p tenancyParams) error {
@@ -98,6 +110,17 @@ func registerTenancy(p tenancyParams) error {
 	}
 
 	p.Logger.Info("Overlapping-CIDR multi-tenancy enabled")
+
+	// Teach the identity allocator how to turn the tenant name carried in an
+	// identity's labels into the tenant ID the datapath encodes, so tenant
+	// identities are allocated from their tenant's numeric range.
+	if setter, ok := p.IdentityAllocator.(tenantIDLookupSetter); ok {
+		setter.SetTenantIDLookup(func(name string) uint32 {
+			return uint32(p.Resolver.TenantIDForName(name))
+		})
+	} else {
+		return fmt.Errorf("identity allocator %T does not support tenant identity ranges", p.IdentityAllocator)
+	}
 
 	if p.Tenants != nil {
 		p.JobGroup.Add(job.OneShot("tenancy-tenant-observer", func(ctx context.Context, _ cell.Health) error {

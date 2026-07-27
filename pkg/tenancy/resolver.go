@@ -26,6 +26,12 @@ type Resolver interface {
 	// injection, where the human-readable name rather than the ID is wanted.
 	TenantNameForNamespace(namespace string) string
 
+	// TenantIDForName returns the datapath tenant ID of a CiliumTenant by name,
+	// or 0 if it is unknown or has no allocated ID. The identity allocator uses
+	// this to map the tenant name carried in an identity's labels back to the ID
+	// the datapath encodes.
+	TenantIDForName(tenantName string) uint16
+
 	// Enabled reports whether multi-tenancy is turned on.
 	Enabled() bool
 }
@@ -109,6 +115,17 @@ func (r *NamespaceResolver) TenantIDForNamespace(namespace string) uint16 {
 func (r *NamespaceResolver) TenantNameForNamespace(namespace string) string {
 	name, _ := r.lookup(namespace)
 	return name
+}
+
+func (r *NamespaceResolver) TenantIDForName(tenantName string) uint16 {
+	if !r.enabled || tenantName == "" {
+		return 0
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.tenants[tenantName].id
 }
 
 // ConflictingTenants returns the names of the tenants that also select the

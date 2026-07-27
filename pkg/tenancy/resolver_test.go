@@ -58,6 +58,28 @@ func TestResolverTenantWithoutAllocatedID(t *testing.T) {
 	require.Equal(t, "", r.TenantNameForNamespace("ns-a"))
 }
 
+func TestResolverTenantIDForName(t *testing.T) {
+	r := NewNamespaceResolver(true)
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+
+	// This is the lookup the identity allocator uses to turn the tenant name in
+	// an identity's labels back into the ID the datapath encodes.
+	require.Equal(t, uint16(3), r.TenantIDForName("acme"))
+
+	// Unknown tenants and the empty name are the default VPC, never a guess.
+	require.Equal(t, uint16(0), r.TenantIDForName("globex"))
+	require.Equal(t, uint16(0), r.TenantIDForName(""))
+
+	r.DeleteTenant("acme")
+	require.Equal(t, uint16(0), r.TenantIDForName("acme"))
+}
+
+func TestResolverTenantIDForNameDisabled(t *testing.T) {
+	r := NewNamespaceResolver(false)
+	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))
+	require.Equal(t, uint16(0), r.TenantIDForName("acme"))
+}
+
 func TestResolverDeleteTenant(t *testing.T) {
 	r := NewNamespaceResolver(true)
 	require.NoError(t, r.UpsertTenant("acme", 3, selector(t, map[string]string{tenantLabel: "acme"})))

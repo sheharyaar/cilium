@@ -235,8 +235,15 @@ func (m *CachingIdentityAllocator) LookupIdentity(ctx context.Context, lbls labe
 		return nil
 	}
 
+	// Look the identity up in the allocator that owns its numeric range, which
+	// for a tenant endpoint is that tenant's allocator.
+	alloc, err := m.allocatorForTenant(m.tenantIDForLabels(lbls))
+	if err != nil {
+		return nil
+	}
+
 	lblArray := lbls.LabelArray()
-	id, err := m.IdentityAllocator.GetIncludeRemoteCaches(ctx, &key.GlobalIdentity{LabelArray: lblArray})
+	id, err := alloc.GetIncludeRemoteCaches(ctx, &key.GlobalIdentity{LabelArray: lblArray})
 	if err != nil {
 		return nil
 	}
@@ -280,7 +287,14 @@ func (m *CachingIdentityAllocator) LookupIdentityByID(ctx context.Context, id id
 		return nil
 	}
 
-	allocatorKey, err := m.IdentityAllocator.GetByIDIncludeRemoteCaches(ctx, idpool.ID(id))
+	// The tenant is encoded in the identity's high bits, so a reverse lookup can
+	// pick the right allocator without consulting any label set.
+	alloc, err := m.allocatorForTenant(id.ClusterID())
+	if err != nil {
+		return nil
+	}
+
+	allocatorKey, err := alloc.GetByIDIncludeRemoteCaches(ctx, idpool.ID(id))
 	if err != nil {
 		return nil
 	}

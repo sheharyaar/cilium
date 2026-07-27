@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	"github.com/cilium/stream"
 	"github.com/google/renameio/v2"
@@ -23,10 +22,8 @@ import (
 	"github.com/cilium/cilium/pkg/idpool"
 	api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
-	"github.com/cilium/cilium/pkg/k8s/identitybackend"
 	"github.com/cilium/cilium/pkg/kvstore"
 	kvstoreallocator "github.com/cilium/cilium/pkg/kvstore/allocator"
-	"github.com/cilium/cilium/pkg/kvstore/allocator/doublewrite"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -102,6 +99,23 @@ type CachingIdentityAllocator struct {
 
 	// syncInterval is the periodic synchronization interval of the allocated identities.
 	syncInterval time.Duration
+
+	// tenantMutex guards tenantIDs, tenantAllocators and newTenantBackend.
+	tenantMutex lock.RWMutex
+
+	// tenantIDs resolves a tenant name to its datapath tenant ID. It is nil
+	// unless tenancy is enabled, in which case every identity is allocated from
+	// the cluster-local range exactly as before.
+	tenantIDs TenantIDLookup
+
+	// tenantAllocators holds one allocator per tenant that has an endpoint on
+	// this node, created lazily. See allocatorForTenant.
+	tenantAllocators map[uint32]*allocator.Allocator
+
+	// newTenantBackend creates a fresh identity backend for a per-tenant
+	// allocator. It is set once the global allocator has picked its backend
+	// type, since a tenant allocator must use the same one.
+	newTenantBackend func() (allocator.Backend, error)
 }
 
 type AllocatorConfig struct {
@@ -231,72 +245,24 @@ func (m *CachingIdentityAllocator) InitIdentityAllocator(client clientset.Interf
 		m.watcher.watch(m.events)
 	}
 
+	// Per-tenant allocators must use the same backend type as the global one, so
+	// record how to build a fresh instance of it. A backend cannot be shared
+	// between allocators: it carries mutable per-allocator store state.
+	m.tenantMutex.Lock()
+	m.newTenantBackend = func() (allocator.Backend, error) {
+		return newIdentityBackend(m.logger, m.identitiesPath, m.owner, client, kvstoreClient)
+	}
+	m.tenantMutex.Unlock()
+
 	// Asynchronously set up the global identity allocator since it connects
 	// to the kvstore.
 	go func(owner IdentityAllocatorOwner, events allocator.AllocatorEventSendChan, minID, maxID idpool.ID) {
 		m.setupMutex.Lock()
 		defer m.setupMutex.Unlock()
 
-		var (
-			backend allocator.Backend
-			err     error
-		)
-
-		switch option.Config.IdentityAllocationMode {
-		case option.IdentityAllocationModeKVstore:
-			m.logger.Debug("Identity allocation backed by KVStore")
-			backend, err = kvstoreallocator.NewKVStoreBackend(
-				m.logger,
-				kvstoreallocator.KVStoreBackendConfiguration{
-					BasePath: m.identitiesPath,
-					Suffix:   owner.GetNodeSuffix(),
-					Typ:      &key.GlobalIdentity{},
-					Backend:  kvstoreClient,
-				})
-			if err != nil {
-				logging.Fatal(m.logger, "Unable to initialize kvstore backend for identity allocation", logfields.Error, err)
-			}
-
-		case option.IdentityAllocationModeCRD:
-			m.logger.Debug("Identity allocation backed by CRD")
-			backend, err = identitybackend.NewCRDBackend(m.logger, identitybackend.CRDBackendConfiguration{
-				Store:    nil,
-				StoreSet: &atomic.Bool{},
-				Client:   client,
-				KeyFunc:  (&key.GlobalIdentity{}).PutKeyFromMap,
-			})
-			if err != nil {
-				logging.Fatal(m.logger, "Unable to initialize Kubernetes CRD backend for identity allocation", logfields.Error, err)
-			}
-
-		case option.IdentityAllocationModeDoubleWriteReadKVstore, option.IdentityAllocationModeDoubleWriteReadCRD:
-			readFromKVStore := true
-			if option.Config.IdentityAllocationMode == option.IdentityAllocationModeDoubleWriteReadCRD {
-				readFromKVStore = false
-			}
-			m.logger.Debug("Double-Write Identity allocation mode (CRD and KVStore) with reads from KVStore", logfields.ReadFromKVStore, readFromKVStore)
-			backend, err = doublewrite.NewDoubleWriteBackend(
-				m.logger,
-				doublewrite.DoubleWriteBackendConfiguration{
-					CRDBackendConfiguration: identitybackend.CRDBackendConfiguration{
-						Store:    nil,
-						StoreSet: &atomic.Bool{},
-						Client:   client,
-						KeyFunc:  (&key.GlobalIdentity{}).PutKeyFromMap,
-					},
-					KVStoreBackendConfiguration: kvstoreallocator.KVStoreBackendConfiguration{
-						BasePath: m.identitiesPath,
-						Suffix:   owner.GetNodeSuffix(),
-						Typ:      &key.GlobalIdentity{},
-						Backend:  kvstoreClient,
-					},
-					ReadFromKVStore: readFromKVStore,
-				})
-			if err != nil {
-				logging.Fatal(m.logger, "Unable to initialize the Double Write backend for identity allocation", logfields.Error, err)
-			}
-		default:
-			logging.Fatal(m.logger, fmt.Sprintf("Unsupported identity allocation mode %s", option.Config.IdentityAllocationMode))
+		backend, err := newIdentityBackend(m.logger, m.identitiesPath, owner, client, kvstoreClient)
+		if err != nil {
+			logging.Fatal(m.logger, "Unable to initialize backend for identity allocation", logfields.Error, err)
 		}
 
 		allocOptions := []allocator.AllocatorOption{
@@ -423,6 +389,8 @@ func (m *CachingIdentityAllocator) Close() {
 			return
 		}
 	}
+
+	m.closeTenantAllocators()
 
 	m.IdentityAllocator.Delete()
 	if m.events != nil {
@@ -565,7 +533,19 @@ func (m *CachingIdentityAllocator) AllocateIdentity(ctx context.Context, lbls la
 		return nil, false, fmt.Errorf("allocator not initialized")
 	}
 
-	idp, allocated, isNewLocally, err := m.IdentityAllocator.Allocate(ctx, &key.GlobalIdentity{LabelArray: lbls.LabelArray()})
+	// Tenant endpoints allocate from their tenant's numeric range so that the
+	// datapath can recover the tenant from the identity's high bits.
+	alloc, err := m.allocatorForTenant(m.tenantIDForLabels(lbls))
+	if err != nil {
+		return nil, false, err
+	}
+	if alloc != m.IdentityAllocator {
+		if err := m.waitForTenantIdentities(ctx, alloc); err != nil {
+			return nil, false, err
+		}
+	}
+
+	idp, allocated, isNewLocally, err := alloc.Allocate(ctx, &key.GlobalIdentity{LabelArray: lbls.LabelArray()})
 	if err != nil {
 		return nil, false, err
 	}
@@ -835,12 +815,20 @@ func (m *CachingIdentityAllocator) Release(ctx context.Context, id *identity.Ide
 		return false, fmt.Errorf("allocator not initialized")
 	}
 
+	// Release against the same allocator the identity was allocated from,
+	// otherwise the reference count is decremented on the wrong instance and the
+	// identity leaks.
+	alloc, err := m.allocatorForTenant(m.tenantIDForLabels(id.Labels))
+	if err != nil {
+		return false, err
+	}
+
 	// Rely on the eventual Kv-Store events for delete
 	// notifications of kv-store allocated identities. Even if an
 	// ID is no longer used locally, it may still be used by
 	// remote nodes, so we can't rely on the locally computed
 	// "lastUse".
-	released, err = m.IdentityAllocator.Release(ctx, &key.GlobalIdentity{LabelArray: id.LabelArray})
+	released, err = alloc.Release(ctx, &key.GlobalIdentity{LabelArray: id.LabelArray})
 	if released {
 		for labelSource := range id.Labels.CollectSources() {
 			metrics.IdentityLabelSources.WithLabelValues(labelSource).Dec()
