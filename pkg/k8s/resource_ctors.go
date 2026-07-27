@@ -247,6 +247,17 @@ func CiliumPodIPPoolResource(params CiliumResourceParams, opts ...func(*metav1.L
 	return resource.New[*cilium_api_v2alpha1.CiliumPodIPPool](params.Lifecycle, lw, params.MetricsProvider, resource.WithMetric("CiliumPodIPPool"), resource.WithCRDSync(params.CRDSyncPromise)), nil
 }
 
+func CiliumTenantResource(params CiliumResourceParams, opts ...func(*metav1.ListOptions)) (resource.Resource[*cilium_api_v2alpha1.CiliumTenant], error) {
+	if !params.ClientSet.IsEnabled() {
+		return nil, nil
+	}
+	lw := utils.ListerWatcherWithModifiers(
+		utils.ListerWatcherFromTyped[*cilium_api_v2alpha1.CiliumTenantList](params.ClientSet.CiliumV2alpha1().CiliumTenants()),
+		opts...,
+	)
+	return resource.New[*cilium_api_v2alpha1.CiliumTenant](params.Lifecycle, lw, params.MetricsProvider, resource.WithMetric("CiliumTenant"), resource.WithCRDSync(params.CRDSyncPromise)), nil
+}
+
 func CiliumBGPNodeConfigResource(params CiliumResourceParams, opts ...func(*metav1.ListOptions)) (resource.Resource[*cilium_api_v2.CiliumBGPNodeConfig], error) {
 	if !params.ClientSet.IsEnabled() {
 		return nil, nil

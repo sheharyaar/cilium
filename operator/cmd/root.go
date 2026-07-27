@@ -48,6 +48,7 @@ import (
 	"github.com/cilium/cilium/operator/pkg/networkpolicy"
 	"github.com/cilium/cilium/operator/pkg/nodeipam"
 	"github.com/cilium/cilium/operator/pkg/secretsync"
+	"github.com/cilium/cilium/operator/pkg/tenancy"
 	"github.com/cilium/cilium/operator/pkg/ztunnel"
 	"github.com/cilium/cilium/operator/policyderivative"
 	"github.com/cilium/cilium/operator/unmanagedpods"
@@ -256,6 +257,7 @@ var (
 
 			bgp.Cell,
 			lbipam.Cell,
+			tenancy.Cell,
 			nodeipam.Cell,
 			auth.Cell,
 			store.Cell,

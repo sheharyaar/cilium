@@ -38,6 +38,7 @@ var (
 			LBIPPoolsResource,
 			k8s.CiliumIdentityResource,
 			k8s.CiliumPodIPPoolResource,
+			k8s.CiliumTenantResource,
 			CiliumBGPClusterConfigResource,
 			k8s.CiliumBGPAdvertisementResource,
 			k8s.CiliumBGPPeerConfigResource,
@@ -64,6 +65,7 @@ type Resources struct {
 	LBIPPools            resource.Resource[*cilium_api_v2.CiliumLoadBalancerIPPool]
 	Identities           resource.Resource[*cilium_api_v2.CiliumIdentity]
 	CiliumPodIPPools     resource.Resource[*cilium_api_v2alpha1.CiliumPodIPPool]
+	CiliumTenants        resource.Resource[*cilium_api_v2alpha1.CiliumTenant]
 	CiliumEndpoints      resource.Resource[*cilium_api_v2.CiliumEndpoint]
 	CiliumEndpointSlices resource.Resource[*cilium_api_v2alpha1.CiliumEndpointSlice]
 	CiliumNodes          resource.Resource[*cilium_api_v2.CiliumNode]
