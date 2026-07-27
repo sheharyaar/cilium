@@ -26,7 +26,12 @@ type nameLabelsGetter interface {
 
 // GetPodMetadata returns the labels and annotations of the pod with the given
 // namespace / name.
-func GetPodMetadata(logger *slog.Logger, k8sNs nameLabelsGetter, pod *slim_corev1.Pod) (containerPorts []slim_corev1.ContainerPort, lbls map[string]string) {
+//
+// tenantName is the CiliumTenant owning the pod's namespace, or the empty string
+// for the default VPC. It is passed in rather than resolved here because only
+// the agent has a tenancy resolver; see the note on the operator's identity
+// management mode in pkg/tenancy.
+func GetPodMetadata(logger *slog.Logger, k8sNs nameLabelsGetter, pod *slim_corev1.Pod, tenantName string) (containerPorts []slim_corev1.ContainerPort, lbls map[string]string) {
 	namespace := pod.Namespace
 	logger.Debug(
 		"Connecting to k8s local stores to retrieve labels for pod",
@@ -35,7 +40,7 @@ func GetPodMetadata(logger *slog.Logger, k8sNs nameLabelsGetter, pod *slim_corev
 	)
 
 	objMetaCpy := pod.ObjectMeta.DeepCopy()
-	labels := k8sUtils.SanitizePodLabels(objMetaCpy.Labels, k8sNs, pod.Spec.ServiceAccountName, option.Config.ClusterName)
+	labels := k8sUtils.SanitizePodLabels(objMetaCpy.Labels, k8sNs, pod.Spec.ServiceAccountName, option.Config.ClusterName, tenantName)
 
 	for _, containers := range pod.Spec.Containers {
 		containerPorts = append(containerPorts, containers.Ports...)

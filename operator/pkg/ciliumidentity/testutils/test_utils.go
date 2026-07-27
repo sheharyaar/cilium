@@ -31,7 +31,7 @@ func NewCID(id string, lbs map[string]string) *capi_v2.CiliumIdentity {
 }
 
 func NewCIDWithNamespace(id string, pod *slim_corev1.Pod, namespace *slim_corev1.Namespace) *capi_v2.CiliumIdentity {
-	lbs := k8sUtils.SanitizePodLabels(pod.ObjectMeta.Labels, namespace, "", "")
+	lbs := k8sUtils.SanitizePodLabels(pod.ObjectMeta.Labels, namespace, "", "", "")
 	return NewCID(id, lbs)
 }
 

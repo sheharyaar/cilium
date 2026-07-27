@@ -16,11 +16,12 @@ import (
 // validInputs is the minimal configuration tenancy supports.
 func validInputs() GuardInputs {
 	return GuardInputs{
-		ClusterID:            0,
-		MaxConnectedClusters: cmtypes.DefaultClusterInfo.MaxConnectedClusters,
-		ClusterMeshConfig:    "",
-		RoutingMode:          option.RoutingModeTunnel,
-		IPAM:                 ipamOption.IPAMMultiPool,
+		ClusterID:              0,
+		MaxConnectedClusters:   cmtypes.DefaultClusterInfo.MaxConnectedClusters,
+		ClusterMeshConfig:      "",
+		RoutingMode:            option.RoutingModeTunnel,
+		IPAM:                   ipamOption.IPAMMultiPool,
+		IdentityManagementMode: option.IdentityManagementModeAgent,
 	}
 }
 
@@ -96,6 +97,19 @@ func TestGuardsRejectConflicts(t *testing.T) {
 			name:   "non-default max connected clusters",
 			mutate: func(in *GuardInputs) { in.MaxConnectedClusters = 511 },
 			errMsg: "--max-connected-clusters",
+		},
+		{
+			// Only the agent can resolve a pod's tenant, so an
+			// operator-managed identity would lack the tenant label and the two
+			// would fight over the same pod's identity.
+			name:   "operator-managed identities",
+			mutate: func(in *GuardInputs) { in.IdentityManagementMode = option.IdentityManagementModeOperator },
+			errMsg: "--identity-management-mode=agent",
+		},
+		{
+			name:   "identities managed by both",
+			mutate: func(in *GuardInputs) { in.IdentityManagementMode = option.IdentityManagementModeBoth },
+			errMsg: "--identity-management-mode=agent",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

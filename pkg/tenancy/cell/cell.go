@@ -20,6 +20,7 @@ import (
 	cmcommon "github.com/cilium/cilium/pkg/clustermesh/common"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	ipseccfg "github.com/cilium/cilium/pkg/datapath/linux/ipsec"
+	identitycachecell "github.com/cilium/cilium/pkg/identity/cache/cell"
 	k8sresources "github.com/cilium/cilium/pkg/k8s"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
@@ -72,20 +73,22 @@ type tenancyParams struct {
 	ClusterMeshCfg  cmcommon.Config
 	IPsecUserConfig ipseccfg.UserConfig
 	WGUserConfig    wgcfg.UserConfig
+	IdentityCfg     identitycachecell.SharedConfig
 }
 
 func registerTenancy(p tenancyParams) error {
 	if err := tenancy.ValidateIfEnabled(p.Config, tenancy.GuardInputs{
-		ClusterID:            p.ClusterInfo.ID,
-		MaxConnectedClusters: p.ClusterInfo.MaxConnectedClusters,
-		ClusterMeshConfig:    p.ClusterMeshCfg.ClusterMeshConfig,
-		RoutingMode:          p.DaemonConfig.RoutingMode,
-		IPAM:                 p.DaemonConfig.IPAM,
-		EnableHostFirewall:   p.DaemonConfig.EnableHostFirewall,
-		EnableEgressGateway:  p.DaemonConfig.EnableEgressGateway,
-		EnableIPSec:          p.IPsecUserConfig.EnableIPsec,
-		EnableWireguard:      p.WGUserConfig.EnableWireguard,
-		EnableVTEP:           p.DaemonConfig.EnableVTEP,
+		ClusterID:              p.ClusterInfo.ID,
+		MaxConnectedClusters:   p.ClusterInfo.MaxConnectedClusters,
+		ClusterMeshConfig:      p.ClusterMeshCfg.ClusterMeshConfig,
+		RoutingMode:            p.DaemonConfig.RoutingMode,
+		IPAM:                   p.DaemonConfig.IPAM,
+		IdentityManagementMode: p.IdentityCfg.IdentityManagementMode,
+		EnableHostFirewall:     p.DaemonConfig.EnableHostFirewall,
+		EnableEgressGateway:    p.DaemonConfig.EnableEgressGateway,
+		EnableIPSec:            p.IPsecUserConfig.EnableIPsec,
+		EnableWireguard:        p.WGUserConfig.EnableWireguard,
+		EnableVTEP:             p.DaemonConfig.EnableVTEP,
 	}); err != nil {
 		return err
 	}

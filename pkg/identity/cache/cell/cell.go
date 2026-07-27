@@ -33,8 +33,23 @@ var Cell = cell.Module(
 	"Allocating and managing security identities",
 
 	cell.Provide(newIdentityAllocator),
+	cell.Provide(newSharedConfig),
 	cell.Config(defaultConfig),
 )
+
+// SharedConfig exposes the parts of this module's configuration that other
+// modules need, without making this module's private config type public.
+type SharedConfig struct {
+	// IdentityManagementMode is whether CiliumIdentities are managed by the
+	// agent, the operator, or both.
+	IdentityManagementMode string
+}
+
+func newSharedConfig(cfg config) SharedConfig {
+	return SharedConfig{
+		IdentityManagementMode: cfg.IdentityManagementMode,
+	}
+}
 
 // CachingIdentityAllocator provides an abstraction over the concrete type in
 // pkg/identity/cache so that the underlying implementation can be mocked out

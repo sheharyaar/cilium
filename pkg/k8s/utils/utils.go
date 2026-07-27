@@ -211,7 +211,11 @@ func RemoveCiliumLabels(labels map[string]string) map[string]string {
 
 // SanitizePodLabels makes sure that no important pod labels were overridden manually on k8s pod
 // object creation.
-func SanitizePodLabels(podLabels map[string]string, namespace nameLabelsGetter, serviceAccount, clusterName string) map[string]string {
+//
+// tenantName is the CiliumTenant the pod's namespace belongs to, or the empty
+// string for the default VPC. The label is only set when a tenant owns the
+// namespace, so untenanted pods keep exactly the label set they have today.
+func SanitizePodLabels(podLabels map[string]string, namespace nameLabelsGetter, serviceAccount, clusterName, tenantName string) map[string]string {
 	sanitizedLabels := RemoveCiliumLabels(podLabels)
 
 	// Sanitize namespace labels
@@ -228,6 +232,15 @@ func SanitizePodLabels(podLabels map[string]string, namespace nameLabelsGetter, 
 	}
 	// Sanitize cluster name
 	sanitizedLabels[k8sconst.PolicyLabelCluster] = clusterName
+	// Sanitize tenant name. RemoveCiliumLabels above already dropped any
+	// pod-supplied value, so a pod cannot claim membership of a tenant it does
+	// not belong to; setting it here is unconditional in the same way as the
+	// cluster name.
+	if tenantName != "" {
+		sanitizedLabels[k8sconst.PolicyLabelTenant] = tenantName
+	} else {
+		delete(sanitizedLabels, k8sconst.PolicyLabelTenant)
+	}
 
 	return sanitizedLabels
 }

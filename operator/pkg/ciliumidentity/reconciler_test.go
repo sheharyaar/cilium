@@ -404,7 +404,7 @@ func TestReconcilePod(t *testing.T) {
 				}
 
 				expectedLbs := key.GetCIDKeyFromLabels(
-					k8sUtils.SanitizePodLabels(tc.newPod.ObjectMeta.Labels, ns1, "", ""),
+					k8sUtils.SanitizePodLabels(tc.newPod.ObjectMeta.Labels, ns1, "", "", ""),
 					labels.LabelSourceK8s,
 				).GetAsMap()
 

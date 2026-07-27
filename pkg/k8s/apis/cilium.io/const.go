@@ -30,6 +30,14 @@ const (
 	// running in
 	PolicyLabelCluster = LabelPrefix + ".policy.cluster"
 
+	// PolicyLabelTenant is the name of the CiliumTenant the endpoint belongs
+	// to. It is absent for endpoints in the default VPC.
+	//
+	// The label is what routes an identity allocation into the tenant's numeric
+	// identity range, so the datapath can recover the tenant from the
+	// identity's high bits. It also lets policy be scoped to a single tenant.
+	PolicyLabelTenant = LabelPrefix + ".policy.tenant"
+
 	// PodNamespaceMetaLabels is the label used to store the labels of the
 	// kubernetes namespace's labels.
 	PodNamespaceMetaLabels = LabelPrefix + ".namespace.labels"

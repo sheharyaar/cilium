@@ -19,6 +19,7 @@ import (
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/tenancy"
 )
 
 var ErrPodStoreOutdated = errors.New("pod store outdated")
@@ -35,15 +36,17 @@ type cachedEndpointMetadataFetcher struct {
 	db         *statedb.DB
 	pods       statedb.Table[daemonk8s.LocalPod]
 	namespaces statedb.Table[daemonk8s.Namespace]
+	tenancy    tenancy.Resolver
 }
 
-func NewEndpointMetadataFetcher(logger *slog.Logger, config *option.DaemonConfig, db *statedb.DB, pods statedb.Table[daemonk8s.LocalPod], namespaces statedb.Table[daemonk8s.Namespace]) EndpointMetadataFetcher {
+func NewEndpointMetadataFetcher(logger *slog.Logger, config *option.DaemonConfig, db *statedb.DB, pods statedb.Table[daemonk8s.LocalPod], namespaces statedb.Table[daemonk8s.Namespace], tenancyResolver tenancy.Resolver) EndpointMetadataFetcher {
 	return &cachedEndpointMetadataFetcher{
 		logger:     logger,
 		config:     config,
 		db:         db,
 		pods:       pods,
 		namespaces: namespaces,
+		tenancy:    tenancyResolver,
 	}
 }
 
@@ -77,7 +80,7 @@ func (cemf *cachedEndpointMetadataFetcher) FetchK8sMetadataForEndpointFromPod(p 
 		return nil, err
 	}
 
-	containerPorts, lbls := k8s.GetPodMetadata(cemf.logger, ns, p)
+	containerPorts, lbls := k8s.GetPodMetadata(cemf.logger, ns, p, cemf.tenantName(p.Namespace))
 	k8sLbls := labels.Map2Labels(lbls, labels.LabelSourceK8s)
 	identityLabels, infoLabels := labelsfilter.Filter(k8sLbls)
 	return &endpoint.K8sMetadata{
@@ -85,6 +88,15 @@ func (cemf *cachedEndpointMetadataFetcher) FetchK8sMetadataForEndpointFromPod(p 
 		IdentityLabels: identityLabels,
 		InfoLabels:     infoLabels,
 	}, nil
+}
+
+// tenantName returns the CiliumTenant owning the namespace, or the empty string
+// for the default VPC.
+func (cemf *cachedEndpointMetadataFetcher) tenantName(nsName string) string {
+	if cemf.tenancy == nil || !cemf.tenancy.Enabled() {
+		return ""
+	}
+	return cemf.tenancy.TenantNameForNamespace(nsName)
 }
 
 func (cemf *cachedEndpointMetadataFetcher) fetchNamespace(nsName string) (daemonk8s.Namespace, error) {

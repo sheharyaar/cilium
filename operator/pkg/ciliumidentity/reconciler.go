@@ -352,7 +352,11 @@ func GetRelevantLabelsForPod(logger *slog.Logger, pod *slim_corev1.Pod, nsStore 
 		return nil, err
 	}
 
-	_, labelsMap := k8s.GetPodMetadata(logger, ns, pod)
+	// The operator has no tenancy resolver, so it cannot compute the tenant
+	// label. That is safe because --enable-tenancy requires
+	// --identity-management-mode=agent, which keeps this controller disabled;
+	// the agent startup guards enforce it.
+	_, labelsMap := k8s.GetPodMetadata(logger, ns, pod, "")
 	return labelsMap, nil
 }
 

@@ -230,6 +230,7 @@ func defaultLabelPrefixCfg() *labelPrefixCfg {
 		regexp.QuoteMeta(k8sConst.PodNamespaceMetaLabels),               // include all namespace labels
 		regexp.QuoteMeta(k8sConst.AppKubernetes),                        // include app.kubernetes.io
 		regexp.QuoteMeta(k8sConst.PolicyLabelCluster),                   // include io.cilium.k8s.policy.cluster
+		regexp.QuoteMeta(k8sConst.PolicyLabelTenant),                    // include io.cilium.k8s.policy.tenant
 		regexp.QuoteMeta(k8sConst.PolicyLabelServiceAccount),            // include io.cilium.k8s.policy.serviceaccount
 		`!io\.kubernetes`,                                               // ignore all other io.kubernetes labels
 		`!kubernetes\.io`,                                               // ignore all other kubernetes.io labels

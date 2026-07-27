@@ -483,7 +483,7 @@ func TestSanitizePodLabels(t *testing.T) {
 			namespaceLabelKey: trueNamespaceLabelValue,
 		},
 	}
-	labels := SanitizePodLabels(testedLabels, fakeNs, trueSA, trueClusterName)
+	labels := SanitizePodLabels(testedLabels, fakeNs, trueSA, trueClusterName, "")
 
 	ns, ok := labels[k8sconst.PodNamespaceLabel]
 	if !ok {
@@ -517,7 +517,7 @@ func TestSanitizePodLabels(t *testing.T) {
 		t.Errorf("namespace meta label not set to %s, set to %s instead", trueNamespaceLabelValue, namespaceMetaLabel)
 	}
 
-	labels = SanitizePodLabels(testedLabels, fakeNs, "", trueClusterName)
+	labels = SanitizePodLabels(testedLabels, fakeNs, "", trueClusterName, "")
 	sa, ok = labels[k8sconst.PolicyLabelServiceAccount]
 	if ok {
 		t.Errorf("Expected service account label to be deleted, got %s instead", sa)

@@ -17,11 +17,12 @@ import (
 // plain struct rather than a set of injected configs so the rules can be tested
 // without standing up a hive.
 type GuardInputs struct {
-	ClusterID            uint32
-	MaxConnectedClusters uint32
-	ClusterMeshConfig    string
-	RoutingMode          string
-	IPAM                 string
+	ClusterID              uint32
+	MaxConnectedClusters   uint32
+	ClusterMeshConfig      string
+	RoutingMode            string
+	IPAM                   string
+	IdentityManagementMode string
 
 	EnableHostFirewall  bool
 	EnableEgressGateway bool
@@ -73,6 +74,16 @@ func Validate(in GuardInputs) error {
 		errs = append(errs, fmt.Errorf(
 			"--%s requires --%s=%s, got %q",
 			EnableTenancy, option.IPAM, ipamOption.IPAMMultiPool, in.IPAM))
+	}
+
+	// The tenant label is injected into identity labels by the agent, which is
+	// the only component with a tenancy resolver. If the operator also manages
+	// CiliumIdentities it would compute the same pod's labels without the tenant
+	// label and fight the agent over the identity.
+	if in.IdentityManagementMode != option.IdentityManagementModeAgent {
+		errs = append(errs, fmt.Errorf(
+			"--%s requires --%s=%s, got %q: only the agent can resolve a pod's tenant, so an operator-managed identity would be missing the tenant label",
+			EnableTenancy, option.IdentityManagementMode, option.IdentityManagementModeAgent, in.IdentityManagementMode))
 	}
 
 	// The features below resolve IPs against the ipcache at cluster ID 0 only,
