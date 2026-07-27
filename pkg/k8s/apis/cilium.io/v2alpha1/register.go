@@ -100,6 +100,11 @@ const (
 	CGCCListName       = "ciliumgatewayclassconfiglists"
 	CGCCKindDefinition = "CiliumGatewayClassConfig"
 	CGCCName           = CGCCPluralName + "." + CustomResourceDefinitionGroup
+
+	// CiliumTenant (CTenant)
+	CTenantPluralName     = "ciliumtenants"
+	CTenantKindDefinition = "CiliumTenant"
+	CTenantName           = CTenantPluralName + "." + CustomResourceDefinitionGroup
 )
 
 // SchemeGroupVersion is group version used to register these objects
@@ -169,6 +174,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		// new Gateway API types
 		&CiliumGatewayClassConfig{},
 		&CiliumGatewayClassConfigList{},
+
+		// multi-tenancy types
+		&CiliumTenant{},
+		&CiliumTenantList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

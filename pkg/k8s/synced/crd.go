@@ -90,6 +90,10 @@ func agentCRDResourceNames() []string {
 	result = append(result,
 		CRDResourceName(v2.LBIPPoolName),
 		CRDResourceName(v2alpha1.L2AnnouncementName),
+		// CiliumTenant is listed unconditionally: the agent's tenancy cell
+		// watches it whenever --enable-tenancy is set, and the operator creates
+		// it unconditionally via AllCiliumCRDResourceNames.
+		CRDResourceName(v2alpha1.CTenantName),
 	)
 
 	return result

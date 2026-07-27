@@ -272,6 +272,7 @@ rules:
   - ciliuml2announcementpolicies.cilium.io
   - ciliumpodippools.cilium.io
   - ciliumgatewayclassconfigs.cilium.io
+  - ciliumtenants.cilium.io
 {{- if and (or .Values.clustermesh.mcsapi.enabled .Values.clustermesh.enableMCSAPISupport) .Values.clustermesh.mcsapi.installCRDs }}
   - serviceimports.multicluster.x-k8s.io
   - serviceexports.multicluster.x-k8s.io
@@ -285,6 +286,7 @@ rules:
   - ciliumbgpclusterconfigs
   - ciliumbgpnodeconfigoverrides
   - ciliumbgppeerconfigs
+  - ciliumtenants
   verbs:
   - get
   - list
@@ -301,6 +303,13 @@ rules:
   - ciliumloadbalancerippools/status
   verbs:
   - patch
+- apiGroups:
+  - cilium.io
+  resources:
+  - ciliumtenants/status
+  verbs:
+  - patch
+  - update
 # For cilium-operator running in HA mode.
 #
 # Cilium operator running in HA mode requires the use of ResourceLock for Leader Election
