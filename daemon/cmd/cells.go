@@ -85,6 +85,7 @@ import (
 	"github.com/cilium/cilium/pkg/source"
 	"github.com/cilium/cilium/pkg/status"
 	"github.com/cilium/cilium/pkg/svcrouteconfig"
+	"github.com/cilium/cilium/pkg/tenancy"
 	"github.com/cilium/cilium/pkg/ztunnel"
 )
 
@@ -276,6 +277,10 @@ var (
 
 		// IPAM provides IP address management.
 		ipamcell.Cell,
+
+		// Tenancy resolves the tenant (VPC) a namespace belongs to and gates
+		// the feature combinations overlapping-CIDR tenancy supports.
+		tenancy.Cell,
 
 		// Egress Gateway allows originating traffic from specific IPv4 addresses.
 		egressgateway.Cell,

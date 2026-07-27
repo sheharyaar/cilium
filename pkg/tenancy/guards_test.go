@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
+
+package tenancy
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/option"
+)
+
+// validInputs is the minimal configuration tenancy supports.
+func validInputs() guardInputs {
+	return guardInputs{
+		ClusterID:            0,
+		MaxConnectedClusters: cmtypes.DefaultClusterInfo.MaxConnectedClusters,
+		ClusterMeshConfig:    "",
+		RoutingMode:          option.RoutingModeTunnel,
+		IPAM:                 ipamOption.IPAMMultiPool,
+	}
+}
+
+func TestGuardsAcceptSupportedConfig(t *testing.T) {
+	require.NoError(t, validate(validInputs()))
+}
+
+func TestGuardsDisabledSkipsEverything(t *testing.T) {
+	// With tenancy off nothing is validated: an unrelated deployment must not
+	// start failing because these guards exist.
+	in := validInputs()
+	in.RoutingMode = option.RoutingModeNative
+	in.IPAM = ipamOption.IPAMKubernetes
+	in.EnableIPSec = true
+	in.ClusterID = 7
+
+	require.NoError(t, validateIfEnabled(Config{EnableTenancy: false}, in))
+	require.Error(t, validateIfEnabled(Config{EnableTenancy: true}, in))
+}
+
+func TestGuardsRejectConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*guardInputs)
+		errMsg string
+	}{
+		{
+			name:   "clustermesh cluster ID",
+			mutate: func(in *guardInputs) { in.ClusterID = 3 },
+			errMsg: "shares its ID space with ClusterMesh",
+		},
+		{
+			name:   "clustermesh config directory",
+			mutate: func(in *guardInputs) { in.ClusterMeshConfig = "/var/lib/cilium/clustermesh" },
+			errMsg: "shares its ID space with ClusterMesh",
+		},
+		{
+			name:   "native routing",
+			mutate: func(in *guardInputs) { in.RoutingMode = option.RoutingModeNative },
+			errMsg: "requires --routing-mode=tunnel",
+		},
+		{
+			name:   "non multi-pool IPAM",
+			mutate: func(in *guardInputs) { in.IPAM = ipamOption.IPAMKubernetes },
+			errMsg: "requires --ipam=multi-pool",
+		},
+		{
+			name:   "host firewall",
+			mutate: func(in *guardInputs) { in.EnableHostFirewall = true },
+			errMsg: "host firewall",
+		},
+		{
+			name:   "egress gateway",
+			mutate: func(in *guardInputs) { in.EnableEgressGateway = true },
+			errMsg: "egress gateway",
+		},
+		{
+			name:   "ipsec",
+			mutate: func(in *guardInputs) { in.EnableIPSec = true },
+			errMsg: "IPsec",
+		},
+		{
+			name:   "wireguard",
+			mutate: func(in *guardInputs) { in.EnableWireguard = true },
+			errMsg: "WireGuard",
+		},
+		{
+			name:   "vtep",
+			mutate: func(in *guardInputs) { in.EnableVTEP = true },
+			errMsg: "VTEP",
+		},
+		{
+			name:   "non-default max connected clusters",
+			mutate: func(in *guardInputs) { in.MaxConnectedClusters = 511 },
+			errMsg: "--max-connected-clusters",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := validInputs()
+			tc.mutate(&in)
+			err := validate(in)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.errMsg)
+		})
+	}
+}
+
+func TestGuardsReportAllConflicts(t *testing.T) {
+	// A misconfigured deployment should learn about every conflict at once
+	// rather than fixing them one agent restart at a time.
+	in := validInputs()
+	in.EnableIPSec = true
+	in.EnableVTEP = true
+	in.RoutingMode = option.RoutingModeNative
+
+	err := validate(in)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "IPsec")
+	require.Contains(t, err.Error(), "VTEP")
+	require.Contains(t, err.Error(), "--routing-mode=tunnel")
+}
