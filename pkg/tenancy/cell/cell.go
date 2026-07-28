@@ -23,9 +23,12 @@ import (
 	ipseccfg "github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	identitycachecell "github.com/cilium/cilium/pkg/identity/cache/cell"
+	"github.com/cilium/cilium/pkg/ipcache"
 	k8sresources "github.com/cilium/cilium/pkg/k8s"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	k8stypes "github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/option"
@@ -80,6 +83,9 @@ type tenancyParams struct {
 	IdentityCfg     identitycachecell.SharedConfig
 
 	IdentityAllocator identitycachecell.CachingIdentityAllocator
+
+	IPCache         *ipcache.IPCache
+	CiliumEndpoints resource.Resource[*k8stypes.CiliumEndpoint]
 }
 
 // perTenantCTMaps builds the per-tenant conntrack map manager and ties its outer
@@ -154,10 +160,17 @@ func registerTenancy(p tenancyParams) error {
 	}
 
 	ctMaps := perTenantCTMaps(p)
+	gateways := newTenantGateways(p.Logger, p.IPCache)
 
 	if p.Tenants != nil {
 		p.JobGroup.Add(job.OneShot("tenancy-tenant-observer", func(ctx context.Context, _ cell.Health) error {
-			return p.watchTenants(ctx, ctMaps)
+			return p.watchTenants(ctx, ctMaps, gateways)
+		}))
+	}
+
+	if p.CiliumEndpoints != nil {
+		p.JobGroup.Add(job.OneShot("tenancy-gateway-observer", func(ctx context.Context, _ cell.Health) error {
+			return p.watchGatewayEndpoints(ctx, gateways)
 		}))
 	}
 
@@ -168,7 +181,7 @@ func registerTenancy(p tenancyParams) error {
 	return nil
 }
 
-func (p tenancyParams) watchTenants(ctx context.Context, ctMaps *tenantCTMaps) error {
+func (p tenancyParams) watchTenants(ctx context.Context, ctMaps *tenantCTMaps, gateways *tenantGateways) error {
 	for ev := range p.Tenants.Events(ctx) {
 		var err error
 		switch ev.Kind {
@@ -181,6 +194,15 @@ func (p tenancyParams) watchTenants(ctx context.Context, ctMaps *tenantCTMaps) e
 			if err = ctMaps.ensure(uint32(tenantID)); err != nil {
 				ev.Done(err)
 				continue
+			}
+
+			if gwErr := p.updateGateway(gateways, ev.Object, tenantID); gwErr != nil {
+				// A malformed gateway selector must not stop the tenant from
+				// being usable for everything else.
+				p.Logger.Error("Ignoring CiliumTenant egressGateway",
+					logfields.Error, gwErr,
+					logfields.Tenant, ev.Object.Name,
+				)
 			}
 
 			err = p.Resolver.UpsertTenant(ev.Object.Name,
@@ -199,6 +221,7 @@ func (p tenancyParams) watchTenants(ctx context.Context, ctMaps *tenantCTMaps) e
 			// Stop handing the tenant out first, then drop its maps, so no
 			// endpoint can be placed in a tenant whose maps just went away.
 			tenantID := p.Resolver.TenantIDForName(ev.Key.Name)
+			gateways.deleteTenant(ev.Key.Name)
 			p.Resolver.DeleteTenant(ev.Key.Name)
 			err = ctMaps.remove(uint32(tenantID))
 		}
@@ -243,4 +266,79 @@ func (p tenancyParams) watchNamespaces(ctx context.Context) error {
 		case <-watch:
 		}
 	}
+}
+
+// updateGateway hands the tenant's egress gateway selection to the reconciler.
+func (p tenancyParams) updateGateway(gateways *tenantGateways,
+	tenant *cilium_api_v2alpha1.CiliumTenant, tenantID uint16) error {
+	var (
+		namespace string
+		selector  *slim_metav1.LabelSelector
+	)
+	if gw := tenant.Spec.EgressGateway; gw != nil {
+		namespace = gw.Namespace
+		selector = gw.PodSelector
+	}
+
+	spec, err := parseGatewaySpec(tenant.Name, namespace, selector)
+	if err != nil {
+		// Still register the tenant, without a gateway, so a later fix is
+		// picked up and the tenant is not left half-known.
+		_ = gateways.upsertTenant(tenant.Name, tenantID, nil)
+		return err
+	}
+
+	return gateways.upsertTenant(tenant.Name, tenantID, spec)
+}
+
+// watchGatewayEndpoints feeds CiliumEndpoints to the gateway reconciler.
+//
+// CiliumEndpoints are used rather than pods because the agent sees them
+// cluster-wide, and a tenant's gateway may run on any node. They also already
+// carry the node IP and the security identity the ipcache entry needs.
+func (p tenancyParams) watchGatewayEndpoints(ctx context.Context, gateways *tenantGateways) error {
+	for ev := range p.CiliumEndpoints.Events(ctx) {
+		var err error
+
+		switch ev.Kind {
+		case resource.Upsert:
+			err = gateways.upsertEndpoint(gatewayCandidateOf(ev.Object))
+		case resource.Delete:
+			err = gateways.deleteEndpoint(ev.Key.Namespace, ev.Key.Name)
+		}
+
+		if err != nil {
+			p.Logger.Error("Failed to reconcile tenant egress gateway",
+				logfields.Error, err,
+			)
+			// Reconciliation is retried on the next event rather than by
+			// requeuing this one: the reconciler recomputes from full state,
+			// so a stale event adds nothing.
+			err = nil
+		}
+		ev.Done(err)
+	}
+	return nil
+}
+
+func gatewayCandidateOf(cep *k8stypes.CiliumEndpoint) gatewayCandidate {
+	c := gatewayCandidate{
+		namespace: cep.Namespace,
+		name:      cep.Name,
+		labels:    cep.Labels,
+	}
+
+	if cep.Identity != nil {
+		c.identity = uint32(cep.Identity.ID)
+	}
+	if cep.Networking != nil {
+		c.nodeIP = cep.Networking.NodeIP
+		for _, pair := range cep.Networking.Addressing {
+			if pair.IPV4 != "" {
+				c.podIP = pair.IPV4
+				break
+			}
+		}
+	}
+	return c
 }
