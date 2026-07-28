@@ -247,11 +247,11 @@ static __always_inline int handle_inter_cluster_revsnat(struct __ctx_buff *ctx,
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
-	/* Same tenant scoping as the main decap path: cluster_id is the sender's
-	 * cluster or tenant, taken from the identity above, and is 0 for untenanted
-	 * traffic.
+	/* Not tenant-scoped: this path is reached only with inter-cluster SNAT,
+	 * which tenancy does not enable, and the local destination endpoint lives
+	 * at cluster 0 regardless of which cluster the packet came from.
 	 */
-	ep = __lookup_ip4_endpoint_cluster(ip4->daddr, cluster_id);
+	ep = lookup_ip4_endpoint(ip4);
 	if (ep) {
 		/* We don't support inter-cluster SNAT from host */
 		if (ep->flags & ENDPOINT_MASK_HOST_DELIVERY)
@@ -424,27 +424,37 @@ skip_vtep:
 #endif
 
 	/* Deliver to local (non-host) endpoint: */
+#ifdef ENABLE_TENANCY
 	{
 		/* With multi-tenancy two endpoints on this node may share the inner
 		 * destination IP, so the endpoint map has to be keyed on the tenant
 		 * as well. The tunnel does not carry the tenant directly, but the
-		 * security identity's high bits do, and in-tenant traffic has a
-		 * source identity from the destination's own tenant. Without this
-		 * the lookup misses entirely once endpoints are tenant-keyed, and
-		 * cross-node pod to pod inside a tenant breaks.
+		 * security identity's high bits do, and a tenant does not span
+		 * clusters, so the sender's tenant is also the destination's.
 		 *
-		 * Untenanted traffic yields cluster ID 0, which is exactly the key
-		 * lookup_ip4_endpoint() built before.
+		 * This is specific to tenancy and must not be done for ClusterMesh,
+		 * where the same bits hold a *remote* cluster ID while the local
+		 * destination endpoint sits at cluster 0 in the endpoint map.
+		 *
+		 * A miss is not retried at cluster 0: that fallback would let a
+		 * tenant's packet reach an identically addressed endpoint in the
+		 * default VPC.
 		 */
-		__u32 cluster_id = extract_cluster_id_from_identity(*identity);
+		__u32 tenant_id = extract_cluster_id_from_identity(*identity);
 
-		ep = __lookup_ip4_endpoint_cluster(ip4->daddr, cluster_id);
+		ep = __lookup_ip4_endpoint_cluster(ip4->daddr, tenant_id);
 		if (ep && !(ep->flags & ENDPOINT_MASK_HOST_DELIVERY))
 			return ipv4_local_delivery(ctx, ETH_HLEN, *identity,
 						   MARK_MAGIC_IDENTITY, ip4, ep,
 						   METRIC_INGRESS, false, true,
-						   cluster_id);
+						   tenant_id);
 	}
+#else
+	ep = lookup_ip4_endpoint(ip4);
+	if (ep && !(ep->flags & ENDPOINT_MASK_HOST_DELIVERY))
+		return ipv4_local_delivery(ctx, ETH_HLEN, *identity, MARK_MAGIC_IDENTITY,
+					   ip4, ep, METRIC_INGRESS, false, true, 0);
+#endif /* ENABLE_TENANCY */
 
 	/* A packet entering the node from the tunnel and not going to a local
 	 * endpoint has to be going to the local host.

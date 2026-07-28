@@ -34,6 +34,26 @@ endpoint_v4_add_entry(__be32 addr, __u32 ifindex, __u16 lxc_id, __u32 flags, __u
 			   ep_mac_addr, node_mac_addr);
 }
 
+/* Add an endpoint inside a tenant (VPC). The endpoint map is keyed on
+ * (IP, cluster_id), so the same address may be added once per tenant.
+ * cluster_id 0 is the default VPC and is equivalent to
+ * endpoint_v4_add_entry().
+ */
+static __always_inline void
+endpoint_v4_add_entry_cluster(__be32 addr, __u16 cluster_id, __u32 ifindex, __u16 lxc_id,
+			      __u32 flags, __u32 sec_id, __u32 parent_ifindex,
+			      const __u8 *ep_mac_addr, const __u8 *node_mac_addr)
+{
+	struct endpoint_key key = {
+		.ip4 = addr,
+		.family = ENDPOINT_KEY_IPV4,
+		.cluster_id = cluster_id,
+	};
+
+	endpoint_add_entry(&key, ifindex, lxc_id, flags, sec_id, parent_ifindex,
+			   ep_mac_addr, node_mac_addr);
+}
+
 static __always_inline void
 endpoint_v4_del_entry(__be32 addr)
 {

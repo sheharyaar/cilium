@@ -617,6 +617,13 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		// only the meaning of the ID differs.
 		cDefinesMap["ENABLE_CLUSTER_AWARE_ADDRESSING"] = "1"
 
+		// Distinct from the flag above, which ClusterMesh also sets. The
+		// decap path has to tell the two apart: under tenancy the sender's
+		// ID in the identity is also the local destination's tenant, while
+		// under ClusterMesh it is a remote cluster and the local endpoint
+		// sits at cluster 0.
+		cDefinesMap["ENABLE_TENANCY"] = "1"
+
 		// ENABLE_INTER_CLUSTER_SNAT is deliberately NOT set here. It would make
 		// snat_v4_needs_masquerade() SNAT every packet whose cluster ID differs
 		// from the local one to IPV4_INTER_CLUSTER_SNAT (bpf/lib/nat.h), which
