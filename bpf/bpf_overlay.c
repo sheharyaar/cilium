@@ -247,7 +247,11 @@ static __always_inline int handle_inter_cluster_revsnat(struct __ctx_buff *ctx,
 	if (!revalidate_data(ctx, &data, &data_end, &ip4))
 		return DROP_INVALID;
 
-	ep = lookup_ip4_endpoint(ip4);
+	/* Same tenant scoping as the main decap path: cluster_id is the sender's
+	 * cluster or tenant, taken from the identity above, and is 0 for untenanted
+	 * traffic.
+	 */
+	ep = __lookup_ip4_endpoint_cluster(ip4->daddr, cluster_id);
 	if (ep) {
 		/* We don't support inter-cluster SNAT from host */
 		if (ep->flags & ENDPOINT_MASK_HOST_DELIVERY)
@@ -420,10 +424,27 @@ skip_vtep:
 #endif
 
 	/* Deliver to local (non-host) endpoint: */
-	ep = lookup_ip4_endpoint(ip4);
-	if (ep && !(ep->flags & ENDPOINT_MASK_HOST_DELIVERY))
-		return ipv4_local_delivery(ctx, ETH_HLEN, *identity, MARK_MAGIC_IDENTITY,
-					   ip4, ep, METRIC_INGRESS, false, true, 0);
+	{
+		/* With multi-tenancy two endpoints on this node may share the inner
+		 * destination IP, so the endpoint map has to be keyed on the tenant
+		 * as well. The tunnel does not carry the tenant directly, but the
+		 * security identity's high bits do, and in-tenant traffic has a
+		 * source identity from the destination's own tenant. Without this
+		 * the lookup misses entirely once endpoints are tenant-keyed, and
+		 * cross-node pod to pod inside a tenant breaks.
+		 *
+		 * Untenanted traffic yields cluster ID 0, which is exactly the key
+		 * lookup_ip4_endpoint() built before.
+		 */
+		__u32 cluster_id = extract_cluster_id_from_identity(*identity);
+
+		ep = __lookup_ip4_endpoint_cluster(ip4->daddr, cluster_id);
+		if (ep && !(ep->flags & ENDPOINT_MASK_HOST_DELIVERY))
+			return ipv4_local_delivery(ctx, ETH_HLEN, *identity,
+						   MARK_MAGIC_IDENTITY, ip4, ep,
+						   METRIC_INGRESS, false, true,
+						   cluster_id);
+	}
 
 	/* A packet entering the node from the tunnel and not going to a local
 	 * endpoint has to be going to the local host.

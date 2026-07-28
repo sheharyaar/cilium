@@ -70,6 +70,11 @@ func TestGuardsRejectConflicts(t *testing.T) {
 			errMsg: "requires --ipam=multi-pool",
 		},
 		{
+			name:   "ipv6 enabled",
+			mutate: func(in *GuardInputs) { in.EnableIPv6 = true },
+			errMsg: "does not support IPv6 yet",
+		},
+		{
 			name:   "host firewall",
 			mutate: func(in *GuardInputs) { in.EnableHostFirewall = true },
 			errMsg: "host firewall",

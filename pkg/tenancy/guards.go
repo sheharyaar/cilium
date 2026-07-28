@@ -25,6 +25,7 @@ type GuardInputs struct {
 	IdentityManagementMode string
 	IdentityAllocationMode string
 
+	EnableIPv6          bool
 	EnableHostFirewall  bool
 	EnableEgressGateway bool
 	EnableIPSec         bool
@@ -96,6 +97,15 @@ func Validate(in GuardInputs) error {
 		errs = append(errs, fmt.Errorf(
 			"--%s requires --%s=%s, got %q: only the agent can resolve a pod's tenant, so an operator-managed identity would be missing the tenant label",
 			EnableTenancy, option.IdentityManagementMode, option.IdentityManagementModeAgent, in.IdentityManagementMode))
+	}
+
+	// The prototype datapath converts the IPv4 lookups only. Their IPv6 twins
+	// still resolve at cluster ID 0, so v6 traffic would silently see the default
+	// VPC's view of a tenant IP. Refuse rather than leak.
+	if in.EnableIPv6 {
+		errs = append(errs, fmt.Errorf(
+			"--%s does not support IPv6 yet: the IPv6 datapath lookups are not tenant aware and would resolve against the default VPC",
+			EnableTenancy))
 	}
 
 	// The features below resolve IPs against the ipcache at cluster ID 0 only,

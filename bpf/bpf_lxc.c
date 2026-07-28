@@ -1232,7 +1232,14 @@ ipv4_forward_to_destination(struct __ctx_buff *ctx, struct iphdr *ip4,
 		 *    host itself
 		 *  - The destination IP address belongs to endpoint itself.
 		 */
-		ep = __lookup_ip4_endpoint(daddr);
+		/* Scope the lookup to this endpoint's tenant. Two tenants may hold
+		 * daddr on this node, and a miss must stay a miss: falling back to
+		 * the default VPC would let a tenant pod reach an untenanted
+		 * endpoint. That also means a tenant pod cannot reach the host
+		 * entries, which live in the default VPC, which is the documented
+		 * host-to-tenant-pod limitation.
+		 */
+		ep = __lookup_ip4_endpoint_cluster(daddr, TENANT_ID);
 		if (ep) {
 #if defined(ENABLE_HOST_ROUTING) || defined(ENABLE_ROUTING)
 			if (ep->flags & ENDPOINT_MASK_HOST_DELIVERY) {
@@ -1251,7 +1258,7 @@ ipv4_forward_to_destination(struct __ctx_buff *ctx, struct iphdr *ip4,
 			return ipv4_local_delivery(ctx, ETH_HLEN, SECLABEL_IPV4,
 						   MARK_MAGIC_IDENTITY, ip4,
 						   ep, METRIC_EGRESS, from_l7lb,
-						   false, 0);
+						   false, TENANT_ID);
 		}
 	}
 
@@ -1408,7 +1415,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	__u16 proxy_port = 0;
 	__u32 cookie = 0;
 	bool from_l7lb = false;
-	__u32 cluster_id = 0;
+	__u32 cluster_id = TENANT_ID;
 	void *ct_map, *ct_related_map = NULL;
 	__u32 zero = 0;
 
@@ -1419,6 +1426,15 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 	/* Restore ct_state from per packet lb handling in the previous tail call. */
 	lb4_ctx_restore_state(ctx, &ct_state_new, &proxy_port, &cluster_id, true);
 	hairpin_flow = ct_state_new.loopback;
+
+	/* The restore above overwrites cluster_id with the value the LB stored,
+	 * which is 0 for everything that did not go through a service. For those
+	 * packets the destination must still be resolved inside this endpoint's
+	 * tenant. For service traffic the backend's tenant wins, since that is
+	 * where the packet is actually headed.
+	 */
+	if (!cluster_id)
+		cluster_id = TENANT_ID;
 
 #if defined(ENABLE_DSR)
 	nat_info = map_lookup_elem(&cilium_dsr_nat_buffer, &zero);
@@ -2262,7 +2278,7 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, __u32 src_label,
 		if (verdict == DROP_POLICY_AUTH_REQUIRED) {
 			const struct remote_endpoint_info *sep;
 
-			sep = lookup_ip4_remote_endpoint(orig_sip, 0);
+			sep = lookup_ip4_remote_endpoint(orig_sip, TENANT_ID);
 			if (sep) {
 				auth_type = (__u8)*ext_err;
 				verdict = auth_lookup(ctx, SECLABEL_IPV4, src_label,
@@ -2424,7 +2440,7 @@ int tail_ipv4_to_endpoint(struct __ctx_buff *ctx)
 	if (identity_is_reserved(src_sec_identity)) {
 		const struct remote_endpoint_info *info;
 
-		info = lookup_ip4_remote_endpoint(ip4->saddr, 0);
+		info = lookup_ip4_remote_endpoint(ip4->saddr, TENANT_ID);
 		if (info != NULL) {
 			__u32 sec_identity = info->sec_identity;
 

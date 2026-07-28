@@ -48,6 +48,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/vtep"
 	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/tenancy"
 )
 
 const NodePortMaxNAT = 65535
@@ -62,6 +63,7 @@ type HeaderfileWriter struct {
 	nodeExtraDefineFns []dpdef.Fn
 	sysctl             sysctl.Sysctl
 	kprCfg             kpr.KPRConfig
+	tenancyCfg         tenancy.Config
 }
 
 func NewHeaderfileWriter(p WriterParams) (datapath.ConfigWriter, error) {
@@ -79,6 +81,7 @@ func NewHeaderfileWriter(p WriterParams) (datapath.ConfigWriter, error) {
 		log:                p.Log,
 		sysctl:             p.Sysctl,
 		kprCfg:             p.KPRConfig,
+		tenancyCfg:         p.TenancyConfig,
 	}, nil
 }
 
@@ -605,6 +608,21 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 	} else {
 		cDefinesMap["ENCAP4_IFINDEX"] = "0"
 		cDefinesMap["ENCAP6_IFINDEX"] = "0"
+	}
+
+	if h.tenancyCfg.EnableTenancy {
+		// Cluster-aware addressing is what makes the datapath key endpoint and
+		// ipcache lookups, and conntrack map selection, on a cluster ID. Tenancy
+		// reuses that dimension for the tenant, so the machinery is identical;
+		// only the meaning of the ID differs.
+		cDefinesMap["ENABLE_CLUSTER_AWARE_ADDRESSING"] = "1"
+
+		// ENABLE_INTER_CLUSTER_SNAT is deliberately NOT set here. It would make
+		// snat_v4_needs_masquerade() SNAT every packet whose cluster ID differs
+		// from the local one to IPV4_INTER_CLUSTER_SNAT (bpf/lib/nat.h), which
+		// for tenancy means all tenant traffic. Tenant egress is meant to leave
+		// through the tenant's gateway pod instead. The NodePort reply path may
+		// need it; that is decided where that path is built and testable.
 	}
 
 	// Write Identity related macros.

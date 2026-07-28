@@ -35,6 +35,7 @@ func Endpoint(ep datapath.EndpointConfiguration, lnc *datapath.LocalNodeConfigur
 
 	cfg.EndpointID = uint16(ep.GetID())
 	cfg.EndpointNetNSCookie = ep.GetEndpointNetNsCookie()
+	cfg.TenantID = uint32(ep.GetTenantID())
 
 	cfg.SecurityLabel = ep.GetIdentity().Uint32()
 

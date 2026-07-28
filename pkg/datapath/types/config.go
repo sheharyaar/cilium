@@ -71,6 +71,11 @@ type CompileTimeConfiguration interface {
 
 	// IsHost returns true if the endpoint is the host endpoint.
 	IsHost() bool
+
+	// GetTenantID returns the tenant (VPC) the endpoint belongs to. 0 is the
+	// default VPC. The datapath keys endpoint map and ipcache lookups on it, so
+	// that two tenants can hold the same pod IP.
+	GetTenantID() uint16
 }
 
 // EndpointConfiguration provides datapath implementations a clean interface

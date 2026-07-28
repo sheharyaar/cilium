@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/cilium/pkg/kpr"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/maps/nodemap"
+	"github.com/cilium/cilium/pkg/tenancy"
 )
 
 type WriterParams struct {
@@ -28,6 +29,7 @@ type WriterParams struct {
 	Sysctl             sysctl.Sysctl
 	KPRConfig          kpr.KPRConfig
 	IPSecConfig        datapath.IPsecConfig
+	TenancyConfig      tenancy.Config
 }
 
 var Cell = cell.Module(

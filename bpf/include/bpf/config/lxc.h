@@ -16,3 +16,9 @@ DECLARE_CONFIG(union v4addr, endpoint_ipv4, "The endpoint's IPv4 address")
 DECLARE_CONFIG(union v6addr, endpoint_ipv6, "The endpoint's IPv6 address")
 
 DECLARE_CONFIG(__u64, endpoint_netns_cookie, "The endpoint's network namespace cookie")
+
+DECLARE_CONFIG(__u32, tenant_id, "Tenant (VPC) ID of the endpoint; 0 = default VPC")
+/* The tenant occupies the same datapath dimension as a ClusterMesh cluster ID,
+ * so it is what endpoint map and ipcache lookups are keyed on for this endpoint.
+ */
+#define TENANT_ID CONFIG(tenant_id)

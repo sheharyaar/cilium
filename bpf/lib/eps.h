@@ -93,6 +93,34 @@ lookup_ip4_endpoint(const struct iphdr *ip4)
 	return __lookup_ip4_endpoint(ip4->daddr);
 }
 
+/* Look up a local endpoint within a tenant (VPC).
+ *
+ * With multi-tenancy two endpoints on this node may share a pod IP, so the
+ * endpoint map is keyed on (IP, tenant). Passing cluster_id 0 yields exactly the
+ * key __lookup_ip4_endpoint() builds, which is why the default VPC is
+ * unaffected.
+ */
+static __always_inline __maybe_unused const struct endpoint_info *
+__lookup_ip4_endpoint_cluster(__u32 ip, __u32 cluster_id)
+{
+	struct endpoint_key key = {};
+
+	if (cluster_id > UINT16_MAX)
+		return NULL;
+
+	key.ip4 = ip;
+	key.family = ENDPOINT_KEY_IPV4;
+	key.cluster_id = (__u16)cluster_id;
+
+	return map_lookup_elem(&cilium_lxc, &key);
+}
+
+static __always_inline __maybe_unused const struct endpoint_info *
+lookup_ip4_endpoint_cluster(const struct iphdr *ip4, __u32 cluster_id)
+{
+	return __lookup_ip4_endpoint_cluster(ip4->daddr, cluster_id);
+}
+
 struct remote_endpoint_info {
 	__u32		sec_identity;
 	union {

@@ -33,6 +33,7 @@ type TestEndpoint struct {
 	isHost      bool
 	State       string
 	NetNsCookie uint64
+	TenantID    uint16
 }
 
 func NewTestEndpoint(t testing.TB) TestEndpoint {
@@ -90,6 +91,8 @@ func (e *TestEndpoint) GetIfIndex() int { return e.IfIndex }
 func (e *TestEndpoint) GetOptions() *option.IntOptions { return e.Opts }
 
 func (e *TestEndpoint) IsHost() bool { return e.isHost }
+
+func (e *TestEndpoint) GetTenantID() uint16 { return e.TenantID }
 
 func (e *TestEndpoint) GetPropertyValue(key string) any { return nil }
 

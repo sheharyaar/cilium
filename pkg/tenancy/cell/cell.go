@@ -97,6 +97,7 @@ func registerTenancy(p tenancyParams) error {
 		IPAM:                   p.DaemonConfig.IPAM,
 		IdentityManagementMode: p.IdentityCfg.IdentityManagementMode,
 		IdentityAllocationMode: p.DaemonConfig.IdentityAllocationMode,
+		EnableIPv6:             p.DaemonConfig.EnableIPv6,
 		EnableHostFirewall:     p.DaemonConfig.EnableHostFirewall,
 		EnableEgressGateway:    p.DaemonConfig.EnableEgressGateway,
 		EnableIPSec:            p.IPsecUserConfig.EnableIPsec,
