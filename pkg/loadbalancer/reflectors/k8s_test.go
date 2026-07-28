@@ -64,7 +64,7 @@ func BenchmarkConvertEndpoints(b *testing.B) {
 	backends := maps.All(eps.Backends)
 
 	for b.Loop() {
-		convertEndpoints(logger, benchmarkExternalConfig, eps.ServiceName, backends)
+		convertEndpoints(logger, benchmarkExternalConfig, eps.ServiceName, 0, backends)
 	}
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "endpoints/sec")
 }

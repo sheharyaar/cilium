@@ -227,7 +227,9 @@ func (s *fileReflector) synchronize(txn writer.WriteTxn, state *StateFile) (numS
 	}
 	for i := range state.Endpoints {
 		eps := k8s.ParseEndpointSliceV1(s.log, &state.Endpoints[i])
-		bes := convertEndpoints(s.log, s.extConfig, eps.ServiceName, maps.All(eps.Backends))
+		// The file-based reflector is a testing and local-API path; it has no
+		// tenancy resolver, so its backends stay in the default VPC.
+		bes := convertEndpoints(s.log, s.extConfig, eps.ServiceName, 0, maps.All(eps.Backends))
 		if err := s.w.UpsertBackends(txn, eps.ServiceName, source.LocalAPI, bes); err != nil {
 			return 0, 0, 0, fmt.Errorf("failed to upsert backends: %w", err)
 		}

@@ -388,7 +388,20 @@ func getIPFamilies(svc *slim_corev1.Service) []slim_corev1.IPFamily {
 	return svc.Spec.IPFamilies
 }
 
-func convertEndpoints(rawlog *slog.Logger, cfg loadbalancer.ExternalConfig, svcName loadbalancer.ServiceName, bes iter.Seq2[cmtypes.AddrCluster, *k8s.Backend]) iter.Seq[loadbalancer.Backend] {
+// convertEndpoints turns the Kubernetes view of a service's endpoints into
+// load-balancer backends.
+//
+// tenantID is the tenant owning the service's namespace, or 0 for the default
+// VPC. It is stamped onto each backend's address so that the datapath can tell
+// apart backends that share an address across tenants: the address' cluster ID
+// becomes lb4_backend.cluster_id, which drives both the endpoint lookup that
+// decides whether a backend is local and the conntrack map the NodePort path
+// uses.
+//
+// It deliberately does not touch Backend.ClusterID. That field records which
+// cluster owns the backend, and setting it would make SetBackendsOfCluster treat
+// these local backends as a remote cluster's and orphan them.
+func convertEndpoints(rawlog *slog.Logger, cfg loadbalancer.ExternalConfig, svcName loadbalancer.ServiceName, tenantID uint16, bes iter.Seq2[cmtypes.AddrCluster, *k8s.Backend]) iter.Seq[loadbalancer.Backend] {
 	return func(yield func(be loadbalancer.Backend) bool) {
 		// Lazily construct the augmented logger as we very rarely log here.
 		log := sync.OnceValue(func() *slog.Logger {
@@ -399,6 +412,13 @@ func convertEndpoints(rawlog *slog.Logger, cfg loadbalancer.ExternalConfig, svcN
 		})
 
 		for addrCluster, be := range bes {
+			// Re-stamp the address with the tenant. Backends arrive from
+			// Kubernetes with cluster ID 0, and a tenant's pod address is
+			// only unique within its own tenant.
+			if tenantID != 0 {
+				addrCluster = cmtypes.AddrClusterFrom(addrCluster.Addr(), uint32(tenantID))
+			}
+
 			if (!cfg.EnableIPv6 && addrCluster.Is6()) || (!cfg.EnableIPv4 && addrCluster.Is4()) {
 				log().Debug(
 					"Skipping Backend due to disabled IP family",

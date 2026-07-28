@@ -39,6 +39,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/source"
+	"github.com/cilium/cilium/pkg/tenancy"
 	"github.com/cilium/cilium/pkg/time"
 )
 
@@ -87,6 +88,22 @@ type reflectorParams struct {
 	TestConfig             *loadbalancer.TestConfig `optional:"true"`
 	Nodes                  statedb.Table[*node.LocalNode]
 	SVCMetrics             SVCMetrics `optional:"true"`
+	// Optional: the load-balancer reflector is instantiated by several hives
+	// that do not wire tenancy at all. A nil resolver means the default VPC.
+	Tenancy tenancy.Resolver `optional:"true"`
+}
+
+// tenantIDForNamespace returns the tenant owning a service's namespace, or 0 for
+// the default VPC.
+//
+// The service's namespace is the right source: a service's EndpointSlices name
+// pods in that same namespace, and a tenant owns whole namespaces, so a
+// service's backends are all in one tenant.
+func (p reflectorParams) tenantIDForNamespace(namespace string) uint16 {
+	if p.Tenancy == nil || !p.Tenancy.Enabled() {
+		return 0
+	}
+	return p.Tenancy.TenantIDForNamespace(namespace)
 }
 
 type K8sReflectorRegistered struct{}
@@ -322,7 +339,8 @@ func runServiceEndpointsReflector(ctx context.Context, health cell.Health, p ref
 				servicesToRefresh.Delete(name)
 
 				// Convert [k8s.Endpoints] to [loadbalancer.Backend]
-				backends := convertEndpoints(p.Log, p.ExtConfig, name, maps.All(eps.Backends))
+				backends := convertEndpoints(p.Log, p.ExtConfig, name,
+					p.tenantIDForNamespace(name.Namespace()), maps.All(eps.Backends))
 
 				err := p.Writer.UpsertBackends(txn, name, source.Kubernetes, backends)
 				rh.update("eps:"+name.String(), err)
@@ -354,7 +372,8 @@ func runServiceEndpointsReflector(ctx context.Context, health cell.Health, p ref
 			var err error
 
 			// Convert [k8s.Endpoints] to [loadbalancer.Backend]
-			backends := convertEndpoints(p.Log, p.ExtConfig, name, allEps.Backends())
+			backends := convertEndpoints(p.Log, p.ExtConfig, name,
+				p.tenantIDForNamespace(name.Namespace()), allEps.Backends())
 
 			// Find orphaned backends. We are using iter.Seq to avoid unnecessary allocations.
 			var orphans iter.Seq[loadbalancer.L3n4Addr] = func(yield func(loadbalancer.L3n4Addr) bool) {
