@@ -102,3 +102,9 @@ NODE_CONFIG(bool, enable_bpf_host_routing, "Enable BPF Host Routing")
 NODE_CONFIG(bool, encryption_strict_ingress, "Enable strict encryption for ingress traffic")
 
 NODE_CONFIG(__u8, monitor_aggregation, "Level of aggregation for monitor events")
+
+NODE_CONFIG(__u32, ct_report_interval, "Interval between aggregated monitor reports in seconds")
+ASSIGN_CONFIG(__u32, ct_report_interval, 5)
+
+NODE_CONFIG(__u8, ct_report_flags, "TCP flags that trigger conntrack monitor reports")
+ASSIGN_CONFIG(__u8, ct_report_flags, 0xff)
