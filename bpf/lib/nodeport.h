@@ -2640,6 +2640,11 @@ int tail_nodeport_nat_egress_ipv4(struct __ctx_buff *ctx)
 	__u32 dst_sec_identity __maybe_unused = 0;
 #ifdef TUNNEL_MODE
 	__u32 src_sec_identity = ctx_load_meta(ctx, CB_SRC_LABEL);
+	/* Narrowed to __u8 deliberately: both a ClusterMesh cluster ID and a
+	 * tenant ID are capped at ClusterIDMax (255), the former by
+	 * --max-connected-clusters and the latter by the CiliumTenant CRD schema
+	 * and a startup guard pinning that same maximum.
+	 */
 	__u8 cluster_id __maybe_unused = (__u8)ctx_load_meta(ctx, CB_CLUSTER_ID_EGRESS);
 	const struct remote_endpoint_info *info;
 	__be32 tunnel_endpoint = 0;
@@ -2850,7 +2855,25 @@ static __always_inline int nodeport_svc_lb4(struct __ctx_buff *ctx,
 			return ret;
 		}
 
+#ifdef ENABLE_CLUSTER_AWARE_ADDRESSING
+		cluster_id = backend->cluster_id;
+#endif
+
+#ifdef ENABLE_TENANCY
+		/* With tenancy the same backend address may exist in several
+		 * tenants on this node, so the lookup has to be scoped to the
+		 * tenant the selected backend belongs to.
+		 *
+		 * Only correct for tenancy. Under ClusterMesh backend->cluster_id
+		 * names the cluster the backend lives in, while every local endpoint
+		 * sits at cluster 0 in the endpoint map, so scoping by it would make
+		 * a local backend look remote.
+		 */
+		backend_local = __lookup_ip4_endpoint_cluster(backend->address,
+							     cluster_id);
+#else
 		backend_local = __lookup_ip4_endpoint(backend->address);
+#endif
 
 		if (!backend_local && lb4_svc_is_hostport(svc))
 			return DROP_INVALID;
@@ -2860,10 +2883,6 @@ static __always_inline int nodeport_svc_lb4(struct __ctx_buff *ctx,
 			*punt_to_stack = true;
 			return CTX_ACT_OK;
 		}
-
-#ifdef ENABLE_CLUSTER_AWARE_ADDRESSING
-		cluster_id = backend->cluster_id;
-#endif
 
 		if (!nodeport_skip_xlate4(svc))
 			ret = lb4_dnat_request(ctx, backend, l3_off, fraginfo,
@@ -2901,9 +2920,36 @@ static __always_inline int nodeport_svc_lb4(struct __ctx_buff *ctx,
 		/* only match CT entries that belong to the same service: */
 		ct_state.rev_nat_index = ct_state_svc.rev_nat_index;
 
+#ifdef ENABLE_TENANCY
+		/* Track in the backend's tenant, not the global map. Two tenants
+		 * may hold the same backend address, so one client reaching both
+		 * services would otherwise collide on a single conntrack entry.
+		 *
+		 * The reply from a local tenant backend leaves through bpf_lxc,
+		 * which selects the same per-tenant map, so the two agree. A reply
+		 * from a *remote* tenant backend re-enters through the rev-NAT
+		 * ingress path, which is still tenant-blind; NodePort to a remote
+		 * tenant backend is therefore not supported yet.
+		 *
+		 * Not applied to ClusterMesh: there the reply path uses the global
+		 * map, so moving the forward entry would strand it.
+		 */
+		void *nodeport_ct_map = get_cluster_ct_map4(tuple, cluster_id);
+
+		/* The per-tenant maps live in an array-of-maps, so the inner
+		 * lookup can come back NULL and the verifier insists it be
+		 * checked. It is NULL when the tenant's map has not been created,
+		 * which means the tenant is not ready to carry traffic yet.
+		 */
+		if (!nodeport_ct_map)
+			return DROP_CT_NO_MAP_FOUND;
+#else
+		void *nodeport_ct_map = get_ct_map4(tuple);
+#endif
+
 		/* Cache is_fragment in advance, lb4_local may invalidate ip4. */
-		ret = ct_lazy_lookup4(get_ct_map4(tuple), tuple, ctx, fraginfo,
-				      l4_off, CT_EGRESS, SCOPE_FORWARD,
+		ret = ct_lazy_lookup4(nodeport_ct_map, tuple, ctx,
+				      fraginfo, l4_off, CT_EGRESS, SCOPE_FORWARD,
 				      CT_ENTRY_NODEPORT, &ct_state, &monitor);
 		if (ret < 0)
 			return ret;
@@ -2913,7 +2959,8 @@ static __always_inline int nodeport_svc_lb4(struct __ctx_buff *ctx,
 			ct_state.src_sec_id = src_sec_identity;
 			ct_state.node_port = 1;
 
-			ret = ct_create4(get_ct_map4(tuple), NULL, tuple, ctx,
+			ret = ct_create4(nodeport_ct_map, NULL,
+					 tuple, ctx,
 					 CT_EGRESS, &ct_state, ext_err);
 			if (IS_ERR(ret))
 				return ret;
@@ -2928,6 +2975,12 @@ static __always_inline int nodeport_svc_lb4(struct __ctx_buff *ctx,
 		}
 
 		if (backend_local) {
+			/* The packet is handed back to the caller to be delivered
+			 * locally. Carry the backend's tenant across, or the delivery
+			 * path has no way to tell which of several same-address
+			 * endpoints this service selected.
+			 */
+			ctx_store_meta(ctx, CB_CLUSTER_ID_INGRESS, cluster_id);
 			ctx_set_xfer(ctx, XFER_PKT_NO_SVC);
 			return CTX_ACT_OK;
 		}

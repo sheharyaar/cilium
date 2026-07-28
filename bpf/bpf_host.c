@@ -754,7 +754,23 @@ handle_ipv4_cont(struct __ctx_buff *ctx, __u32 secctx, const bool from_host,
 #endif /* !ENABLE_HOST_ROUTING */
 
 	/* Lookup IPv4 address in list of local endpoints and host IPs */
+#ifdef ENABLE_TENANCY
+	/* A NodePort service that selected a tenant backend leaves the tenant in
+	 * CB_CLUSTER_ID_INGRESS, because the backend's address alone no longer
+	 * identifies an endpoint: several tenants may hold it.
+	 *
+	 * Only traffic that arrived from a device can have been through the
+	 * NodePort path. Traffic pushed via cilium_host carries unrelated
+	 * metadata, and the host itself is always in the default VPC.
+	 */
+	__u32 tenant_id = from_host ? 0 : ctx_load_and_clear_meta(ctx, CB_CLUSTER_ID_INGRESS);
+
+	ep = __lookup_ip4_endpoint_cluster(ip4->daddr, tenant_id);
+#else
+	const __u32 tenant_id = 0;
+
 	ep = lookup_ip4_endpoint(ip4);
+#endif /* ENABLE_TENANCY */
 	if (ep) {
 		int l3_off = ETH_HLEN;
 
@@ -784,7 +800,7 @@ handle_ipv4_cont(struct __ctx_buff *ctx, __u32 secctx, const bool from_host,
 #endif
 
 		return ipv4_local_delivery(ctx, l3_off, secctx, magic, ip4, ep,
-					   METRIC_INGRESS, from_host, false, 0);
+					   METRIC_INGRESS, from_host, false, tenant_id);
 	}
 
 	/* Below remainder is only relevant when traffic is pushed via cilium_host.
