@@ -27,6 +27,7 @@ import (
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/tenancy"
 	wgcfg "github.com/cilium/cilium/pkg/wireguard/agent"
@@ -60,8 +61,9 @@ func newTenancyResolver(cfg tenancy.Config) (tenancy.Resolver, *tenancy.Namespac
 type tenancyParams struct {
 	cell.In
 
-	Logger   *slog.Logger
-	JobGroup job.Group
+	Logger    *slog.Logger
+	JobGroup  job.Group
+	Lifecycle cell.Lifecycle
 
 	Config   tenancy.Config
 	Resolver *tenancy.NamespaceResolver
@@ -78,6 +80,33 @@ type tenancyParams struct {
 	IdentityCfg     identitycachecell.SharedConfig
 
 	IdentityAllocator identitycachecell.CachingIdentityAllocator
+}
+
+// perTenantCTMaps builds the per-tenant conntrack map manager and ties its outer
+// maps to the agent lifecycle. Returns an inert reconciler when tenancy is off.
+func perTenantCTMaps(p tenancyParams) *tenantCTMaps {
+	if !p.Config.EnableTenancy {
+		return newTenantCTMaps(p.Logger, nil)
+	}
+
+	// IPv6 is refused alongside tenancy, so only the v4 maps are managed.
+	maps := ctmap.NewPerClusterCTMaps(true, false)
+
+	p.Lifecycle.Append(cell.Hook{
+		OnStart: func(cell.HookContext) error {
+			// The outer maps must exist before any tenant's inner map can be
+			// inserted, and before the datapath looks one up.
+			if err := maps.OpenOrCreate(); err != nil {
+				return fmt.Errorf("creating per-tenant conntrack maps: %w", err)
+			}
+			return nil
+		},
+		OnStop: func(cell.HookContext) error {
+			return maps.Close()
+		},
+	})
+
+	return newTenantCTMaps(p.Logger, maps)
 }
 
 // tenantIDLookupSetter is implemented by the concrete caching identity
@@ -124,9 +153,11 @@ func registerTenancy(p tenancyParams) error {
 		return fmt.Errorf("identity allocator %T does not support tenant identity ranges", p.IdentityAllocator)
 	}
 
+	ctMaps := perTenantCTMaps(p)
+
 	if p.Tenants != nil {
 		p.JobGroup.Add(job.OneShot("tenancy-tenant-observer", func(ctx context.Context, _ cell.Health) error {
-			return p.watchTenants(ctx)
+			return p.watchTenants(ctx, ctMaps)
 		}))
 	}
 
@@ -137,13 +168,23 @@ func registerTenancy(p tenancyParams) error {
 	return nil
 }
 
-func (p tenancyParams) watchTenants(ctx context.Context) error {
+func (p tenancyParams) watchTenants(ctx context.Context, ctMaps *tenantCTMaps) error {
 	for ev := range p.Tenants.Events(ctx) {
 		var err error
 		switch ev.Kind {
 		case resource.Upsert:
+			tenantID := tenantIDOf(ev.Object)
+
+			// The conntrack maps must exist before the resolver hands this
+			// tenant out, otherwise an endpoint could be created in a tenant
+			// whose map the datapath cannot find. Retry on failure.
+			if err = ctMaps.ensure(uint32(tenantID)); err != nil {
+				ev.Done(err)
+				continue
+			}
+
 			err = p.Resolver.UpsertTenant(ev.Object.Name,
-				tenantIDOf(ev.Object), ev.Object.Spec.NamespaceSelector)
+				tenantID, ev.Object.Spec.NamespaceSelector)
 			if err != nil {
 				// A malformed selector is a user error; log it and drop the
 				// tenant rather than retrying forever.
@@ -155,7 +196,11 @@ func (p tenancyParams) watchTenants(ctx context.Context) error {
 				err = nil
 			}
 		case resource.Delete:
+			// Stop handing the tenant out first, then drop its maps, so no
+			// endpoint can be placed in a tenant whose maps just went away.
+			tenantID := p.Resolver.TenantIDForName(ev.Key.Name)
 			p.Resolver.DeleteTenant(ev.Key.Name)
+			err = ctMaps.remove(uint32(tenantID))
 		}
 		ev.Done(err)
 	}
