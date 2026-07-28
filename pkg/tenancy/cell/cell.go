@@ -18,7 +18,6 @@ import (
 	"github.com/cilium/statedb"
 
 	daemonk8s "github.com/cilium/cilium/daemon/k8s"
-	cmcommon "github.com/cilium/cilium/pkg/clustermesh/common"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	ipseccfg "github.com/cilium/cilium/pkg/datapath/linux/ipsec"
 	"github.com/cilium/cilium/pkg/identity/cache"
@@ -77,7 +76,6 @@ type tenancyParams struct {
 
 	DaemonConfig    *option.DaemonConfig
 	ClusterInfo     cmtypes.ClusterInfo
-	ClusterMeshCfg  cmcommon.Config
 	IPsecUserConfig ipseccfg.UserConfig
 	WGUserConfig    wgcfg.UserConfig
 	IdentityCfg     identitycachecell.SharedConfig
@@ -127,7 +125,6 @@ func registerTenancy(p tenancyParams) error {
 	if err := tenancy.ValidateIfEnabled(p.Config, tenancy.GuardInputs{
 		ClusterID:              p.ClusterInfo.ID,
 		MaxConnectedClusters:   p.ClusterInfo.MaxConnectedClusters,
-		ClusterMeshConfig:      p.ClusterMeshCfg.ClusterMeshConfig,
 		RoutingMode:            p.DaemonConfig.RoutingMode,
 		IPAM:                   p.DaemonConfig.IPAM,
 		IdentityManagementMode: p.IdentityCfg.IdentityManagementMode,

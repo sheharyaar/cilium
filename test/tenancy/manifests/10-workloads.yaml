@@ -1,0 +1,114 @@
+# One server and one client per tenant, pinned to different nodes so the
+# cross-node path is exercised, plus a NodePort service per tenant.
+#
+# No readiness or liveness probes anywhere: tenant pods have no host-netns route,
+# so kubelet cannot reach them. That is a documented prototype limitation, not an
+# oversight here.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: acme
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: server}
+  template:
+    metadata:
+      labels: {app: server}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      containers:
+        - name: server
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: acme
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: client}
+  template:
+    metadata:
+      labels: {app: client}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker2
+      containers:
+        - name: client
+          image: curlimages/curl:8.10.1
+          command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: acme
+spec:
+  type: NodePort
+  selector: {app: server}
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 31080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: globex
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: server}
+  template:
+    metadata:
+      labels: {app: server}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      containers:
+        - name: server
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: globex
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: client}
+  template:
+    metadata:
+      labels: {app: client}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker2
+      containers:
+        - name: client
+          image: curlimages/curl:8.10.1
+          command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: globex
+spec:
+  type: NodePort
+  selector: {app: server}
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 31081

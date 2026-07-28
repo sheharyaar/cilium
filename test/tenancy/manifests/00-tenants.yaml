@@ -1,0 +1,73 @@
+# Two tenants, each owning one namespace, each with an IP pool carrying THE SAME
+# CIDR. The overlap is the point of the exercise: without tenancy the operator
+# would be handing the same addresses to two different pods with no way for the
+# datapath to tell them apart.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acme
+  labels:
+    tenant.cilium.io/name: acme
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: globex
+  labels:
+    tenant.cilium.io/name: globex
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumTenant
+metadata:
+  name: acme
+spec:
+  namespaceSelector:
+    matchLabels:
+      tenant.cilium.io/name: acme
+  egressGateway:
+    namespace: acme
+    podSelector:
+      matchLabels:
+        app: egress-gateway
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumTenant
+metadata:
+  name: globex
+spec:
+  namespaceSelector:
+    matchLabels:
+      tenant.cilium.io/name: globex
+---
+# Same CIDR in both pools. The operator rejects this only when two pools share a
+# tenant; across tenants it is allowed.
+apiVersion: cilium.io/v2alpha1
+kind: CiliumPodIPPool
+metadata:
+  name: acme-pool
+  labels:
+    tenancy.cilium.io/tenant: acme
+spec:
+  ipv4:
+    cidrs:
+      - 10.64.0.0/16
+    maskSize: 27
+  namespaceSelector:
+    matchLabels:
+      tenant.cilium.io/name: acme
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumPodIPPool
+metadata:
+  name: globex-pool
+  labels:
+    tenancy.cilium.io/tenant: globex
+spec:
+  ipv4:
+    cidrs:
+      - 10.64.0.0/16
+    maskSize: 27
+  namespaceSelector:
+    matchLabels:
+      tenant.cilium.io/name: globex

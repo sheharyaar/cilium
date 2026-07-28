@@ -1,0 +1,52 @@
+# The acme tenant's egress gateway.
+#
+# This is a deployment artifact, not agent code. The agent only installs the
+# ipcache entry that makes this pod the tenant's default route; getting packets
+# from here to the outside world is the pod's own job.
+#
+# Shape used here: a privileged pod that masquerades the tenant's CIDR. It is
+# deliberately the simplest thing that demonstrates the escape hatch, and is not
+# a production design. A real gateway would have a second interface in the
+# default VPC rather than relying on host networking.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: egress-gateway
+  namespace: acme
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-gateway
+  namespace: acme
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: egress-gateway}
+  template:
+    metadata:
+      labels: {app: egress-gateway}
+    spec:
+      serviceAccountName: egress-gateway
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker2
+      containers:
+        - name: gateway
+          image: nicolaka/netshoot:v0.13
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              sysctl -w net.ipv4.ip_forward=1
+              # Masquerade anything arriving from the tenant's pod CIDR so the
+              # reply can find its way back.
+              iptables -t nat -C POSTROUTING -s 10.64.0.0/16 -j MASQUERADE 2>/dev/null ||
+                iptables -t nat -A POSTROUTING -s 10.64.0.0/16 -j MASQUERADE
+              echo "egress gateway ready"
+              sleep infinity

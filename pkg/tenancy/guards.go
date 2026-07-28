@@ -19,7 +19,6 @@ import (
 type GuardInputs struct {
 	ClusterID              uint32
 	MaxConnectedClusters   uint32
-	ClusterMeshConfig      string
 	RoutingMode            string
 	IPAM                   string
 	IdentityManagementMode string
@@ -48,10 +47,16 @@ func Validate(in GuardInputs) error {
 
 	// A tenant ID and a ClusterMesh cluster ID are the same datapath bits, so
 	// the two features cannot coexist.
-	if in.ClusterID != 0 || in.ClusterMeshConfig != "" {
+	//
+	// A non-zero local cluster ID is the signal, not the presence of a
+	// clustermesh config directory: the Helm chart passes --clustermesh-config
+	// unconditionally as a default path, so it is set even on clusters that have
+	// never heard of ClusterMesh. Members of a mesh each carry a distinct
+	// non-zero ID, which is exactly what would collide with a tenant's.
+	if in.ClusterID != 0 {
 		errs = append(errs, fmt.Errorf(
-			"--%s cannot be used with ClusterMesh: a tenant ID shares its ID space with ClusterMesh cluster IDs (cluster-id=%d, clustermesh-config=%q)",
-			EnableTenancy, in.ClusterID, in.ClusterMeshConfig))
+			"--%s cannot be used with ClusterMesh: a tenant ID shares its ID space with ClusterMesh cluster IDs (cluster-id=%d)",
+			EnableTenancy, in.ClusterID))
 	}
 
 	// The tenant ID range and the identity bit layout are both derived from

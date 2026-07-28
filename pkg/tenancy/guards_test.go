@@ -18,7 +18,6 @@ func validInputs() GuardInputs {
 	return GuardInputs{
 		ClusterID:              0,
 		MaxConnectedClusters:   cmtypes.DefaultClusterInfo.MaxConnectedClusters,
-		ClusterMeshConfig:      "",
 		RoutingMode:            option.RoutingModeTunnel,
 		IPAM:                   ipamOption.IPAMMultiPool,
 		IdentityManagementMode: option.IdentityManagementModeAgent,
@@ -52,11 +51,6 @@ func TestGuardsRejectConflicts(t *testing.T) {
 		{
 			name:   "clustermesh cluster ID",
 			mutate: func(in *GuardInputs) { in.ClusterID = 3 },
-			errMsg: "shares its ID space with ClusterMesh",
-		},
-		{
-			name:   "clustermesh config directory",
-			mutate: func(in *GuardInputs) { in.ClusterMeshConfig = "/var/lib/cilium/clustermesh" },
 			errMsg: "shares its ID space with ClusterMesh",
 		},
 		{
@@ -131,6 +125,14 @@ func TestGuardsRejectConflicts(t *testing.T) {
 			require.Contains(t, err.Error(), tc.errMsg)
 		})
 	}
+}
+
+// The Helm chart always passes --clustermesh-config, so a set path must not on
+// its own be read as "ClusterMesh is in use". Getting this wrong made the agent
+// refuse to start on a plain cluster.
+func TestGuardsIgnoreClusterMeshConfigPath(t *testing.T) {
+	in := validInputs()
+	require.NoError(t, Validate(in))
 }
 
 func TestGuardsReportAllConflicts(t *testing.T) {
