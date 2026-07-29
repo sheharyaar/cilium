@@ -71,6 +71,11 @@ func TestGuardsRejectConflicts(t *testing.T) {
 			errMsg: "does not support IPv6 yet",
 		},
 		{
+			name:   "masquerading",
+			mutate: func(in *GuardInputs) { in.EnableIPv4Masquerade = true },
+			errMsg: "NodePort becomes intermittent",
+		},
+		{
 			name:   "DSR load balancer mode",
 			mutate: func(in *GuardInputs) { in.LBMode = loadbalancer.LBModeDSR },
 			errMsg: "requires --bpf-lb-mode=snat",

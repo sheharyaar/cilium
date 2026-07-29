@@ -194,7 +194,20 @@ struct {
 static __always_inline void *
 get_cluster_snat_map_v4(__u32 cluster_id __maybe_unused)
 {
-#if defined(ENABLE_CLUSTER_AWARE_ADDRESSING) && defined(ENABLE_INTER_CLUSTER_SNAT)
+/* ENABLE_TENANCY is listed separately rather than folded into the condition
+ * above, because tenancy deliberately does not set ENABLE_INTER_CLUSTER_SNAT:
+ * that would make snat_v4_needs_masquerade() rewrite every tenant packet to
+ * IPV4_INTER_CLUSTER_SNAT, when tenant egress is meant to leave through the
+ * tenant's gateway pod. Only the map selection is wanted here.
+ *
+ * It is wanted because a NAT entry is keyed on the pod address, and pod
+ * addresses repeat across tenants by design. Two tenants' pods at the same
+ * address reaching the same destination on the same port would otherwise share
+ * one entry, and the reverse translation would hand the reply to whichever of
+ * them the routing happened to pick.
+ */
+#if defined(ENABLE_CLUSTER_AWARE_ADDRESSING) && \
+    (defined(ENABLE_INTER_CLUSTER_SNAT) || defined(ENABLE_TENANCY))
 	if (cluster_id != 0 && cluster_id != CONFIG(cluster_id))
 		return map_lookup_elem(&cilium_per_cluster_snat_v4_external, &cluster_id);
 #endif

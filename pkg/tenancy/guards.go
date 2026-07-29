@@ -25,13 +25,14 @@ type GuardInputs struct {
 	IdentityManagementMode string
 	IdentityAllocationMode string
 
-	LBMode              string
-	EnableIPv6          bool
-	EnableHostFirewall  bool
-	EnableEgressGateway bool
-	EnableIPSec         bool
-	EnableWireguard     bool
-	EnableVTEP          bool
+	LBMode               string
+	EnableIPv4Masquerade bool
+	EnableIPv6           bool
+	EnableHostFirewall   bool
+	EnableEgressGateway  bool
+	EnableIPSec          bool
+	EnableWireguard      bool
+	EnableVTEP           bool
 }
 
 func ValidateIfEnabled(cfg Config, in GuardInputs) error {
@@ -117,6 +118,22 @@ func Validate(in GuardInputs) error {
 		errs = append(errs, fmt.Errorf(
 			"--%s requires --%s=%s, got %q: the DSR ingress conntrack entry cannot be scoped to a tenant, so the reply would not be reverse-NATed",
 			EnableTenancy, loadbalancer.LoadBalancerModeName, loadbalancer.LBModeSNAT, in.LBMode))
+	}
+
+	// Masquerading is refused on evidence rather than on principle. The NAT
+	// maps are per-tenant and the tenant is recoverable at to-netdev from the
+	// identity in skb->mark, so the pieces are in place, but turning
+	// masquerading on makes NodePort intermittent: on a two-tenant kind cluster
+	// the same request succeeded and timed out in alternation for both tenants,
+	// where it is reliable with masquerading off. The cause has not been
+	// isolated, and an intermittent data path is worse than a refused one.
+	//
+	// snat_v4_needs_masquerade() is also still tenant-blind in its decision of
+	// whether a packet came from a local endpoint, which is a separate gap.
+	if in.EnableIPv4Masquerade {
+		errs = append(errs, fmt.Errorf(
+			"--%s cannot be used with --%s: NodePort becomes intermittent, and the masquerade decision is not tenant aware",
+			EnableTenancy, option.EnableIPv4Masquerade))
 	}
 
 	// The prototype datapath converts the IPv4 lookups only. Their IPv6 twins

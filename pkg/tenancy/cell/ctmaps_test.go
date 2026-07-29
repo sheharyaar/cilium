@@ -45,7 +45,7 @@ func newTestCTReconciler(t *testing.T) (*tenantCTMaps, *fakeCTMaps, *tenancy.Nam
 	t.Helper()
 	maps := &fakeCTMaps{}
 	resolver := tenancy.NewNamespaceResolver(true)
-	return newTenantCTMaps(hivetest.Logger(t), maps), maps, resolver
+	return newTenantCTMaps(hivetest.Logger(t), maps, nil), maps, resolver
 }
 
 func TestTenantCTMapsCreateIsIdempotent(t *testing.T) {
@@ -105,7 +105,7 @@ func TestTenantCTMapsCreateFailureIsNotRecorded(t *testing.T) {
 func TestTenantCTMapsDisabled(t *testing.T) {
 	// With no manager the reconciler is inert, which is the state when tenancy
 	// is off.
-	r := newTenantCTMaps(hivetest.Logger(t), nil)
+	r := newTenantCTMaps(hivetest.Logger(t), nil, nil)
 	require.NoError(t, r.ensure(3))
 	require.NoError(t, r.remove(3))
 }

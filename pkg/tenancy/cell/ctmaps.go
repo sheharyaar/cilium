@@ -18,6 +18,18 @@ type ctMapManager interface {
 	DeleteClusterCTMaps(clusterID uint32) error
 }
 
+// natMapManager is the same narrowing for nat.PerClusterNATMapper.
+//
+// The NAT maps have to follow the conntrack maps exactly. A NAT entry is keyed
+// on the pod address, which repeats across tenants by design, so two tenants'
+// pods at the same address reaching the same destination on the same port would
+// share one entry and the reverse translation would hand the reply to whichever
+// of them routing happened to pick.
+type natMapManager interface {
+	CreateClusterNATMaps(clusterID uint32) error
+	DeleteClusterNATMaps(clusterID uint32) error
+}
+
 // tenantCTMaps keeps the per-tenant conntrack maps in step with the set of
 // tenants.
 //
@@ -31,6 +43,7 @@ type ctMapManager interface {
 type tenantCTMaps struct {
 	logger *slog.Logger
 	maps   ctMapManager
+	nat    natMapManager
 
 	mu lock.Mutex
 	// present tracks the tenants whose inner maps this agent created, so a
@@ -39,10 +52,11 @@ type tenantCTMaps struct {
 	present map[uint32]struct{}
 }
 
-func newTenantCTMaps(logger *slog.Logger, maps ctMapManager) *tenantCTMaps {
+func newTenantCTMaps(logger *slog.Logger, maps ctMapManager, nat natMapManager) *tenantCTMaps {
 	return &tenantCTMaps{
 		logger:  logger,
 		maps:    maps,
+		nat:     nat,
 		present: make(map[uint32]struct{}),
 	}
 }
@@ -66,8 +80,17 @@ func (t *tenantCTMaps) ensure(tenantID uint32) error {
 		return fmt.Errorf("creating conntrack maps for tenant %d: %w", tenantID, err)
 	}
 
+	// Same reasoning, and the datapath drops with DROP_SNAT_NO_MAP_FOUND rather
+	// than falling back to the global map, so a missing NAT map is not a silent
+	// loss of isolation but it is a loss of traffic.
+	if t.nat != nil {
+		if err := t.nat.CreateClusterNATMaps(tenantID); err != nil {
+			return fmt.Errorf("creating NAT maps for tenant %d: %w", tenantID, err)
+		}
+	}
+
 	t.present[tenantID] = struct{}{}
-	t.logger.Info("Created per-tenant conntrack maps", logfields.TenantID, tenantID)
+	t.logger.Info("Created per-tenant conntrack and NAT maps", logfields.TenantID, tenantID)
 	return nil
 }
 
@@ -89,7 +112,13 @@ func (t *tenantCTMaps) remove(tenantID uint32) error {
 		return fmt.Errorf("deleting conntrack maps for tenant %d: %w", tenantID, err)
 	}
 
+	if t.nat != nil {
+		if err := t.nat.DeleteClusterNATMaps(tenantID); err != nil {
+			return fmt.Errorf("deleting NAT maps for tenant %d: %w", tenantID, err)
+		}
+	}
+
 	delete(t.present, tenantID)
-	t.logger.Info("Removed per-tenant conntrack maps", logfields.TenantID, tenantID)
+	t.logger.Info("Removed per-tenant conntrack and NAT maps", logfields.TenantID, tenantID)
 	return nil
 }

@@ -10,6 +10,7 @@ package cell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/ctmap/gc"
+	"github.com/cilium/cilium/pkg/maps/nat"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/tenancy"
 	wgcfg "github.com/cilium/cilium/pkg/wireguard/agent"
@@ -123,13 +125,14 @@ func perTenantCTMaps(p ctMapParams) ctMapsOut {
 		// Still provide a retriever, since the type is required by the graph
 		// once this cell is in it. An empty slice makes the GC loop a no-op.
 		return ctMapsOut{
-			Maps:      newTenantCTMaps(p.Logger, nil),
+			Maps:      newTenantCTMaps(p.Logger, nil, nil),
 			Retriever: func() []*ctmap.Map { return nil },
 		}
 	}
 
 	// IPv6 is refused alongside tenancy, so only the v4 maps are managed.
 	maps := ctmap.NewPerClusterCTMaps(true, false)
+	natMaps := nat.NewPerClusterNATMaps(true, false)
 
 	p.Lifecycle.Append(cell.Hook{
 		OnStart: func(cell.HookContext) error {
@@ -138,15 +141,18 @@ func perTenantCTMaps(p ctMapParams) ctMapsOut {
 			if err := maps.OpenOrCreate(); err != nil {
 				return fmt.Errorf("creating per-tenant conntrack maps: %w", err)
 			}
+			if err := natMaps.OpenOrCreate(); err != nil {
+				return fmt.Errorf("creating per-tenant NAT maps: %w", err)
+			}
 			return nil
 		},
 		OnStop: func(cell.HookContext) error {
-			return maps.Close()
+			return errors.Join(maps.Close(), natMaps.Close())
 		},
 	})
 
 	return ctMapsOut{
-		Maps: newTenantCTMaps(p.Logger, maps),
+		Maps: newTenantCTMaps(p.Logger, maps, natMaps),
 		// Returns only the tenants whose inner maps this agent created, and the
 		// GC opens and closes each handle itself.
 		Retriever: maps.GetAllClusterCTMaps,
@@ -170,6 +176,7 @@ func registerTenancy(p tenancyParams, ctMaps *tenantCTMaps) error {
 		IdentityManagementMode: p.IdentityCfg.IdentityManagementMode,
 		IdentityAllocationMode: p.DaemonConfig.IdentityAllocationMode,
 		LBMode:                 p.LBConfig.LBMode,
+		EnableIPv4Masquerade:   p.DaemonConfig.EnableIPv4Masquerade,
 		EnableIPv6:             p.DaemonConfig.EnableIPv6,
 		EnableHostFirewall:     p.DaemonConfig.EnableHostFirewall,
 		EnableEgressGateway:    p.DaemonConfig.EnableEgressGateway,

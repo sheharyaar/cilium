@@ -72,6 +72,30 @@
 #define FROM_HOST_FLAG_NEED_HOSTFW (1 << 1)
 #define FROM_HOST_FLAG_HOST_ID (1 << 2)
 
+/* The tenant to scope this node's SNAT bookkeeping to, taken from the identity
+ * of whoever sent the packet.
+ *
+ * bpf_host serves every endpoint on the node, so it has no tenant of its own,
+ * and the source address on an egressing packet is exactly the value tenancy
+ * makes ambiguous. The identity is the way out: bpf_lxc stamps it into
+ * skb->mark on every packet leaving an endpoint (set_identity_mark(), called
+ * unconditionally so that the identity survives a later SNAT), and to-netdev
+ * reads it back into src_sec_identity. A tenant lives in the high bits of an
+ * identity, so it comes along for free.
+ *
+ * Host-sourced traffic resolves to HOST_ID, whose high bits are zero, which is
+ * the default VPC and the right answer.
+ */
+static __always_inline __u32
+snat_tenant_of(__u32 src_sec_identity __maybe_unused)
+{
+#ifdef ENABLE_TENANCY
+	return extract_cluster_id_from_identity(src_sec_identity);
+#else
+	return 0;
+#endif
+}
+
 static __always_inline bool allow_vlan(__u32 __maybe_unused ifindex, __u32 __maybe_unused vlan_id) {
 	VLAN_FILTER(ifindex, vlan_id);
 }
@@ -1540,7 +1564,8 @@ skip_host_firewall:
 		 * handle_nat_fwd tail calls in the majority of cases,
 		 * so control might never return to this program.
 		 */
-		ret = handle_nat_fwd(ctx, 0, src_sec_identity, proto, false, &trace, &ext_err);
+		ret = handle_nat_fwd(ctx, snat_tenant_of(src_sec_identity),
+				     src_sec_identity, proto, false, &trace, &ext_err);
 		if (ret == CTX_ACT_REDIRECT)
 			return ret;
 	}
@@ -1785,7 +1810,8 @@ int cil_to_host(struct __ctx_buff *ctx)
 	 * might never return to this program. Since IPsec is not compatible
 	 * iwth Host Firewall, this won't be an issue.
 	 */
-	ret = handle_nat_fwd(ctx, 0, src_id, proto, true, &trace, &ext_err);
+	ret = handle_nat_fwd(ctx, snat_tenant_of(src_id), src_id, proto, true,
+			     &trace, &ext_err);
 	if (IS_ERR(ret))
 		goto out;
 

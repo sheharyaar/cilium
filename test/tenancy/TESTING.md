@@ -42,11 +42,24 @@ cilium install \
   --set=extraArgs='{--enable-tenancy}'
 ```
 
-Masquerading is off deliberately. Multi-pool IPAM panics at startup with
-iptables masquerading unless `egressMasqueradeInterfaces` is set, and
-`snat_v4_needs_masquerade()` is still tenant-blind, so BPF masquerading with
-tenancy has not been examined. Nothing in this document needs the default VPC to
-reach the internet.
+Masquerading is off, and now refused outright by a startup guard.
+
+The earlier reasoning here was that multi-pool IPAM panics with iptables
+masquerading unless `egressMasqueradeInterfaces` is set. That is true but
+incomplete: `bpf.masquerade=true` turns iptables masquerading off
+(`IptablesMasqueradingIPv4Enabled()` is `!EnableBPFMasquerade &&
+EnableIPv4Masquerade`), so the panic never fires and the combination does start.
+It was tried on this cluster and the agents came up fine.
+
+What it does instead is make NodePort intermittent. With masquerading on, the
+same NodePort request alternated between `200` and a timeout, for both tenants,
+across consecutive attempts; with it off, three consecutive full runs passed.
+The cause has not been isolated. `snat_v4_needs_masquerade()` is also still
+tenant-blind in deciding whether a packet came from a local endpoint.
+
+An intermittent data path is worse to live with than a refused one, so
+`--enable-ipv4-masquerade` is now rejected at startup. Nothing in this document
+needs the default VPC to reach the internet.
 
 Multi-pool IPAM then blocks every untenanted pod until a pool named `default`
 exists, so create it once the agents are up:
@@ -431,6 +444,9 @@ cilium install ... --set=ipam.mode=cluster-pool --set=extraArgs='{--enable-tenan
 
 # should refuse: a DSR conntrack entry cannot be scoped to a tenant
 cilium install ... --set=loadBalancer.mode=dsr --set=extraArgs='{--enable-tenancy}'
+
+# should refuse: masquerading makes NodePort intermittent
+cilium install ... --set=enableIPv4Masquerade=true --set=extraArgs='{--enable-tenancy}'
 ```
 
 The DSR guard is the one added last and the reasoning behind it is the same as

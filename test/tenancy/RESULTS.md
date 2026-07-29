@@ -97,6 +97,32 @@ A DSR load-balancer mode hits the same wall at
 `nodeport_dsr_ingress_ipv4()` and cannot be resolved the same way, so
 `--bpf-lb-mode=dsr` and `hybrid` are now refused at startup.
 
+## Found while testing: an agent restart breaks tenancy for running pods
+
+Not an assertion failure, because `run.sh` recreates pods, which is exactly what
+hid it.
+
+Restart the agents with `kubectl rollout restart ds/cilium` and leave the pods
+alone, and the endpoints come back with identities in the **tenant 0** range:
+
+```
+Identity of endpoint changed ... k8sPodName=acme/server-...
+    old-identity=67846 new-identity=56077
+```
+
+`67846 >> 16 == 1`, which is acme. `56077 >> 16 == 0`, which is the default VPC.
+The first label resolution after restart is missing
+`k8s:io.cilium.k8s.policy.tenant=acme` entirely; a later one has it, but the
+identity does not move back.
+
+The visible consequence is that load-balancer backends lose their tenant tag --
+`10.64.0.98:80/TCP` where it should read `10.64.0.98@1:80/TCP` -- so the NodePort
+endpoint lookup resolves in the wrong tenant and the service stops working until
+the pods are recreated.
+
+This looks like an ordering problem between endpoint restoration and the tenancy
+resolver learning its namespace mapping, but that has not been confirmed.
+
 ## Failure 6: tenant default route is never installed
 
 The gateway pod runs, has a CiliumEndpoint, and its labels match the tenant's
@@ -150,8 +176,11 @@ CRD the operator registers, so applying it to a fresh cluster fails with `ensure
 CRDs are installed first`. The agents block untenanted pods until it appears,
 which is harmless.
 
-Masquerading is off because multi-pool IPAM refuses to start with iptables
-masquerading unless `egressMasqueradeInterfaces` is set, and no assertion needs
-the default VPC to reach the internet. Note that `snat_v4_needs_masquerade` is
-still tenant-blind, so enabling BPF masquerading with tenancy has not been
-examined.
+Masquerading is off and now refused by a startup guard. The reason given
+earlier -- that multi-pool IPAM will not start with iptables masquerading -- is
+true but sidesteppable with `bpf.masquerade=true`, which was tried here: the
+agents start fine, and the per-tenant NAT maps are created. What it breaks is
+NodePort, which becomes intermittent (the same request alternating between `200`
+and a timeout for both tenants, where it is reliable with masquerading off). The
+cause is not isolated, so the configuration is rejected rather than shipped
+flaky. See TESTING.md.

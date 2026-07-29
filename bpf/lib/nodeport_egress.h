@@ -337,7 +337,13 @@ static __always_inline int nodeport_snat_fwd_ipv4(struct __ctx_buff *ctx,
 	struct ipv4_nat_target target = {
 		.min_port = NODEPORT_PORT_MIN_NAT,
 		.max_port = NODEPORT_PORT_MAX_NAT,
-#if defined(ENABLE_CLUSTER_AWARE_ADDRESSING) && defined(ENABLE_INTER_CLUSTER_SNAT)
+#if defined(ENABLE_CLUSTER_AWARE_ADDRESSING) && \
+    (defined(ENABLE_INTER_CLUSTER_SNAT) || defined(ENABLE_TENANCY))
+		/* Under tenancy this is the tenant of the endpoint the packet
+		 * came from, recovered from the identity in skb->mark. It
+		 * selects the NAT map and nothing else; see the comment on
+		 * get_cluster_snat_map_v4().
+		 */
 		.cluster_id = cluster_id,
 #endif
 	};
@@ -358,7 +364,14 @@ static __always_inline int nodeport_snat_fwd_ipv4(struct __ctx_buff *ctx,
 	if (is_defined(IS_BPF_HOST) && is_defined(ENABLE_MASQUERADE_IPV4)) {
 		const struct endpoint_info *ep;
 
+#ifdef ENABLE_TENANCY
+		/* The source address alone no longer names an endpoint, so ask
+		 * in the tenant the packet's identity said it came from.
+		 */
+		ep = __lookup_ip4_endpoint_cluster(ip4->saddr, cluster_id);
+#else
 		ep = __lookup_ip4_endpoint(ip4->saddr);
+#endif
 		if (ep && ep->parent_ifindex && ep->parent_ifindex != CONFIG(interface_ifindex)) {
 			/* This packet came from an endpoint with a parent interface and
 			 * it is currently not egressing on its parent interface.
