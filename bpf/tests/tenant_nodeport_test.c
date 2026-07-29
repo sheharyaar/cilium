@@ -61,11 +61,40 @@
 #define TENANT_ONE_IDENTITY	((TENANT_ONE << 16) | 0xff01)
 #define TENANT_TWO_IDENTITY	((TENANT_TWO << 16) | 0xff02)
 
+#define REV_NAT_INDEX		1
+
+/* The interface the reply leaves on. Kept equal to what the mocked FIB lookup
+ * reports so nodeport_fib_lookup_and_redirect() returns CTX_ACT_OK instead of
+ * redirecting, and the reverse-NAT that follows it actually runs.
+ */
+#define HOST_IFINDEX		1
+
 #undef EVENT_SOURCE
+
+/* The test namespace has no routes, so the real FIB lookup fails with
+ * BPF_FIB_LKUP_RET_NOT_FWDED and the reply is dropped before it reaches the
+ * reverse-NAT. Mock it out; routing is not what is under test here.
+ */
+#define fib_lookup mock_fib_lookup
+
+long mock_fib_lookup(__maybe_unused struct __ctx_buff * volatile ctx,
+		     struct bpf_fib_lookup *params,
+		     __maybe_unused int plen, __maybe_unused __u32 flags)
+{
+	/* The verifier checks this function in isolation and cannot see that
+	 * params is non-NULL at every call site.
+	 */
+	if (!params)
+		return BPF_FIB_LKUP_RET_BLACKHOLE;
+
+	params->ifindex = HOST_IFINDEX;
+	return BPF_FIB_LKUP_RET_SUCCESS;
+}
 
 #include "lib/bpf_host.h"
 
 ASSIGN_CONFIG(__u32, cluster_id, 0)
+ASSIGN_CONFIG(__u32, interface_ifindex, HOST_IFINDEX)
 
 #include "lib/endpoint.h"
 #include "lib/ipcache.h"
@@ -112,9 +141,16 @@ static __always_inline void add_both_tenant_endpoints(void)
 				      (__u8 *)TENANT_TWO_MAC, (__u8 *)NODE_MAC);
 }
 
+/* Flagged as a NodePort rather than a plain service. That is what makes
+ * nodeport_svc_lb4() stamp node_port on the conntrack entry it creates, which
+ * in turn is what the reply direction reads to decide there is a reverse-NAT to
+ * undo. Without the flag the forward cases below still pass and the reply case
+ * has nothing to find.
+ */
 static __always_inline void add_service_for_tenant(__u8 tenant)
 {
-	lb_v4_add_service(FRONTEND_IP, FRONTEND_PORT, IPPROTO_TCP, 1, 1);
+	lb_v4_add_nodeport_service(FRONTEND_IP, FRONTEND_PORT, IPPROTO_TCP, 1,
+				   REV_NAT_INDEX, 0);
 	lb_v4_add_backend(FRONTEND_IP, FRONTEND_PORT, 1, 1,
 			  BACKEND_IP, BACKEND_PORT, IPPROTO_TCP, tenant);
 }
@@ -231,6 +267,162 @@ int nodeport_tenant_two_check(struct __ctx_buff *ctx)
 
 	if (memcmp(l2->h_dest, (__u8 *)TENANT_TWO_MAC, ETH_ALEN) != 0)
 		test_fatal("not delivered to tenant two's endpoint");
+
+	test_finish();
+}
+
+/* 03 and 04 are one flow in two halves: the request that creates the conntrack
+ * entry, then the backend's reply that has to find it again.
+ *
+ * This pair exists because its absence let a real bug ship. The forward cases
+ * above passed the whole time the reply was leaving un-reverse-NATed, because
+ * nothing ever exercised the return direction. The two halves must stay
+ * adjacent and in order; the reply half depends on the state the request half
+ * leaves in the maps.
+ *
+ * What is actually under test is that the forward and reply directions agree on
+ * *which conntrack map* holds the entry. They run in different programs --
+ * nodeport_svc_lb4() in from-netdev writes it, nodeport_rev_dnat_fwd_ipv4() in
+ * to-netdev reads it -- and only the first of those knows the backend's tenant.
+ * Scope the write to the tenant and the read finds nothing.
+ */
+PKTGEN("tc", "03_nodeport_request_to_tenant_one")
+int nodeport_request_pktgen(struct __ctx_buff *ctx)
+{
+	return pktgen_from_client(ctx);
+}
+
+SETUP("tc", "03_nodeport_request_to_tenant_one")
+int nodeport_request_setup(struct __ctx_buff *ctx)
+{
+	add_both_tenant_endpoints();
+	add_service_for_tenant(TENANT_ONE);
+
+	return netdev_receive_packet(ctx);
+}
+
+CHECK("tc", "03_nodeport_request_to_tenant_one")
+int nodeport_request_check(struct __ctx_buff *ctx)
+{
+	void *data, *data_end;
+	struct iphdr *l3;
+	struct ethhdr *l2;
+
+	test_init();
+
+	data = (void *)(long)ctx_data(ctx);
+	data_end = (void *)(long)ctx->data_end;
+
+	if (data + sizeof(__u32) > data_end)
+		test_fatal("status code out of bounds");
+
+	l2 = data + sizeof(__u32);
+	if ((void *)l2 + sizeof(struct ethhdr) > data_end)
+		test_fatal("l2 out of bounds");
+
+	l3 = (void *)l2 + sizeof(struct ethhdr);
+	if ((void *)l3 + sizeof(struct iphdr) > data_end)
+		test_fatal("l3 out of bounds");
+
+	/* Only a precondition for 04: the request has to have reached the
+	 * backend for there to be a conntrack entry at all.
+	 */
+	if (l3->daddr != BACKEND_IP)
+		test_fatal("request was not DNATed to the backend");
+
+	if (memcmp(l2->h_dest, (__u8 *)TENANT_ONE_MAC, ETH_ALEN) != 0)
+		test_fatal("request was not delivered to tenant one's endpoint");
+
+	test_finish();
+}
+
+/* The backend answers. Source and destination are the reverse of the request
+ * as it looked after DNAT.
+ */
+PKTGEN("tc", "04_nodeport_reply_is_reverse_natted")
+int nodeport_reply_pktgen(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+	struct tcphdr *l4;
+	void *data;
+
+	pktgen__init(&builder, ctx);
+
+	l4 = pktgen__push_ipv4_tcp_packet(&builder,
+					  (__u8 *)TENANT_ONE_MAC,
+					  (__u8 *)NODE_MAC,
+					  BACKEND_IP, CLIENT_IP,
+					  BACKEND_PORT, CLIENT_PORT);
+	if (!l4)
+		return TEST_ERROR;
+
+	l4->syn = 1;
+	l4->ack = 1;
+
+	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
+	if (!data)
+		return TEST_ERROR;
+
+	pktgen__finish(&builder);
+	return 0;
+}
+
+SETUP("tc", "04_nodeport_reply_is_reverse_natted")
+int nodeport_reply_setup(struct __ctx_buff *ctx)
+{
+	/* Deliberately no map setup. Everything this needs was left behind by
+	 * 03, which is the point: the reply has to find the forward entry.
+	 */
+	return netdev_send_packet(ctx);
+}
+
+CHECK("tc", "04_nodeport_reply_is_reverse_natted")
+int nodeport_reply_check(struct __ctx_buff *ctx)
+{
+	void *data, *data_end;
+	struct tcphdr *l4;
+	struct iphdr *l3;
+	struct ethhdr *l2;
+
+	test_init();
+
+	data = (void *)(long)ctx_data(ctx);
+	data_end = (void *)(long)ctx->data_end;
+
+	if (data + sizeof(__u32) > data_end)
+		test_fatal("status code out of bounds");
+
+	l2 = data + sizeof(__u32);
+	if ((void *)l2 + sizeof(struct ethhdr) > data_end)
+		test_fatal("l2 out of bounds");
+
+	l3 = (void *)l2 + sizeof(struct ethhdr);
+	if ((void *)l3 + sizeof(struct iphdr) > data_end)
+		test_fatal("l3 out of bounds");
+
+	l4 = (void *)l3 + sizeof(struct iphdr);
+	if ((void *)l4 + sizeof(struct tcphdr) > data_end)
+		test_fatal("l4 out of bounds");
+
+	/* The whole point. The client contacted the frontend and must get an
+	 * answer from the frontend; a reply still sourced from the backend
+	 * address is one the client has no socket for and will discard.
+	 *
+	 * Asserted on the address and the port separately, because reverse-NAT
+	 * rewrites both and getting only one right is a plausible half-failure.
+	 */
+	if (l3->saddr != FRONTEND_IP)
+		test_fatal("reply was not reverse-NATed: source is still the backend address");
+
+	if (l4->source != FRONTEND_PORT)
+		test_fatal("reply source port was not translated back to the frontend");
+
+	/* Untouched, so a wholesale rewrite would not pass by accident. */
+	if (l3->daddr != CLIENT_IP)
+		test_fatal("reply destination was rewritten");
+
+	if (l4->dest != CLIENT_PORT)
+		test_fatal("reply destination port was rewritten");
 
 	test_finish();
 }

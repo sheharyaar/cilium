@@ -4,9 +4,13 @@
 package cell
 
 import (
+	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
+	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,3 +109,32 @@ func TestTenantCTMapsDisabled(t *testing.T) {
 	require.NoError(t, r.ensure(3))
 	require.NoError(t, r.remove(3))
 }
+
+// The garbage collector takes the per-cluster conntrack maps through an
+// optional hive dependency that nothing else in the tree provides. If this cell
+// stops providing it, the per-tenant maps are created and never collected, and
+// their LRU starts evicting live-but-idle connections to make room for dead
+// ones. The failure is silent and slow, so assert the wiring rather than
+// trusting it.
+func TestPerTenantCTMapsProvidesGCRetriever(t *testing.T) {
+	// Disabled is the case that can be exercised without BPF privileges. The
+	// retriever must still be non-nil so the hive graph resolves for every
+	// deployment, not only tenancy ones.
+	out := perTenantCTMaps(ctMapParams{
+		Logger:    hivetest.Logger(t),
+		Lifecycle: &fakeLifecycle{},
+		Config:    tenancy.Config{EnableTenancy: false},
+	})
+
+	require.NotNil(t, out.Maps)
+	require.NotNil(t, out.Retriever, "GC would silently stop collecting per-tenant conntrack maps")
+	assert.Empty(t, out.Retriever(), "no tenants means nothing to collect")
+}
+
+// fakeLifecycle accepts hooks without running them.
+type fakeLifecycle struct{ hooks []cell.HookInterface }
+
+func (f *fakeLifecycle) Append(h cell.HookInterface)               { f.hooks = append(f.hooks, h) }
+func (f *fakeLifecycle) Start(*slog.Logger, context.Context) error { return nil }
+func (f *fakeLifecycle) Stop(*slog.Logger, context.Context) error  { return nil }
+func (f *fakeLifecycle) PrintHooks(io.Writer)                      {}

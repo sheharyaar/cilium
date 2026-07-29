@@ -216,3 +216,82 @@ int cross_tenant_check(struct __ctx_buff *ctx)
 
 	test_finish();
 }
+
+/* 03: an inbound connection to this endpoint must be conntracked in the
+ * endpoint's own tenant, and nowhere else.
+ *
+ * This is not a nicety. bpf_lxc looks its conntrack entry up through
+ * select_ct_map4(), which is tenant-scoped, so a create that goes anywhere else
+ * is a create no later lookup will find. When that happened, every packet of
+ * the connection came back CT_NEW: policy was re-evaluated per packet, and a
+ * NodePort reply never matched an entry carrying a rev-NAT index.
+ *
+ * The two halves of that bug are asserted separately below -- present in the
+ * tenant's map, absent from the global one -- because "present in the tenant's
+ * map" alone would still pass if the entry were written to both.
+ */
+PKTGEN("tc", "03_ingress_conntrack_is_scoped_to_the_tenant")
+int ingress_ct_pktgen(struct __ctx_buff *ctx)
+{
+	struct pktgen builder;
+	struct tcphdr *l4;
+	void *data;
+
+	pktgen__init(&builder, ctx);
+
+	/* Inbound: someone outside this node opening a connection to us. */
+	l4 = pktgen__push_ipv4_tcp_packet(&builder,
+					  (__u8 *)NODE_MAC,
+					  (__u8 *)SENDER_MAC,
+					  REMOTE_NODE_IP, SENDER_IP,
+					  SENDER_PORT, DST_PORT);
+	if (!l4)
+		return TEST_ERROR;
+
+	l4->syn = 1;
+	l4->ack = 0;
+
+	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
+	if (!data)
+		return TEST_ERROR;
+
+	pktgen__finish(&builder);
+	return 0;
+}
+
+SETUP("tc", "03_ingress_conntrack_is_scoped_to_the_tenant")
+int ingress_ct_setup(struct __ctx_buff *ctx)
+{
+	populate_ipcache();
+	policy_add_ingress_allow_l3_l4_entry(0, 0, 0, 0);
+
+	return pod_receive_packet(ctx);
+}
+
+CHECK("tc", "03_ingress_conntrack_is_scoped_to_the_tenant")
+int ingress_ct_check(__maybe_unused struct __ctx_buff *ctx)
+{
+	/* Field names in struct ipv4_ct_tuple are those of the reply direction,
+	 * so for an inbound flow saddr is this pod and daddr is the peer, while
+	 * the ports keep their original-direction meaning. See the layout note
+	 * above DEFINE_FUNC_CT_IS_REPLY in bpf/lib/conntrack.h.
+	 */
+	struct ipv4_ct_tuple tuple = {
+		.saddr   = SENDER_IP,
+		.daddr   = REMOTE_NODE_IP,
+		.sport   = SENDER_PORT,
+		.dport   = DST_PORT,
+		.nexthdr = IPPROTO_TCP,
+		.flags   = TUPLE_F_IN,
+	};
+
+	test_init();
+
+	if (!map_lookup_elem(&per_cluster_ct_tcp4_1, &tuple))
+		test_fatal("no conntrack entry in the endpoint's own tenant");
+
+	if (map_lookup_elem(&cilium_ct4_global, &tuple))
+		test_fatal("conntrack entry also landed in the global map");
+
+	test_finish();
+}

@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
+	"github.com/cilium/cilium/pkg/maps/ctmap/gc"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/tenancy"
 	wgcfg "github.com/cilium/cilium/pkg/wireguard/agent"
@@ -49,6 +50,7 @@ var Cell = cell.Module(
 
 	cell.ProvidePrivate(k8sresources.CiliumTenantResource),
 	cell.Provide(newTenancyResolver),
+	cell.Provide(perTenantCTMaps),
 
 	cell.Invoke(registerTenancy),
 )
@@ -88,11 +90,42 @@ type tenancyParams struct {
 	CiliumEndpoints resource.Resource[*k8stypes.CiliumEndpoint]
 }
 
+type ctMapParams struct {
+	cell.In
+
+	Logger    *slog.Logger
+	Lifecycle cell.Lifecycle
+	Config    tenancy.Config
+}
+
+type ctMapsOut struct {
+	cell.Out
+
+	Maps *tenantCTMaps
+
+	// Retriever hands the per-tenant conntrack maps to the garbage collector.
+	// It is an optional dependency there with no other provider in the tree, so
+	// without this the maps are created and never collected.
+	//
+	// They are LRU maps, so they do not fill and start refusing inserts. What
+	// they do instead is worse to debug: eviction is by least-recently-used,
+	// which is not the same as finished, so a live but idle connection can be
+	// evicted while a dead one that saw traffic more recently survives.
+	// Collecting the entries whose connections have actually ended keeps the
+	// LRU from having to guess.
+	Retriever gc.PerClusterCTMapsRetriever
+}
+
 // perTenantCTMaps builds the per-tenant conntrack map manager and ties its outer
 // maps to the agent lifecycle. Returns an inert reconciler when tenancy is off.
-func perTenantCTMaps(p tenancyParams) *tenantCTMaps {
+func perTenantCTMaps(p ctMapParams) ctMapsOut {
 	if !p.Config.EnableTenancy {
-		return newTenantCTMaps(p.Logger, nil)
+		// Still provide a retriever, since the type is required by the graph
+		// once this cell is in it. An empty slice makes the GC loop a no-op.
+		return ctMapsOut{
+			Maps:      newTenantCTMaps(p.Logger, nil),
+			Retriever: func() []*ctmap.Map { return nil },
+		}
 	}
 
 	// IPv6 is refused alongside tenancy, so only the v4 maps are managed.
@@ -112,7 +145,12 @@ func perTenantCTMaps(p tenancyParams) *tenantCTMaps {
 		},
 	})
 
-	return newTenantCTMaps(p.Logger, maps)
+	return ctMapsOut{
+		Maps: newTenantCTMaps(p.Logger, maps),
+		// Returns only the tenants whose inner maps this agent created, and the
+		// GC opens and closes each handle itself.
+		Retriever: maps.GetAllClusterCTMaps,
+	}
 }
 
 // tenantIDLookupSetter is implemented by the concrete caching identity
@@ -123,7 +161,7 @@ type tenantIDLookupSetter interface {
 	SetTenantIDLookup(cache.TenantIDLookup)
 }
 
-func registerTenancy(p tenancyParams) error {
+func registerTenancy(p tenancyParams, ctMaps *tenantCTMaps) error {
 	if err := tenancy.ValidateIfEnabled(p.Config, tenancy.GuardInputs{
 		ClusterID:              p.ClusterInfo.ID,
 		MaxConnectedClusters:   p.ClusterInfo.MaxConnectedClusters,
@@ -159,7 +197,6 @@ func registerTenancy(p tenancyParams) error {
 		return fmt.Errorf("identity allocator %T does not support tenant identity ranges", p.IdentityAllocator)
 	}
 
-	ctMaps := perTenantCTMaps(p)
 	gateways := newTenantGateways(p.Logger, p.IPCache)
 
 	if p.Tenants != nil {
