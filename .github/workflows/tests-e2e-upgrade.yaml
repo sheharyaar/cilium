@@ -170,7 +170,9 @@ jobs:
             CONFIG_COUNT=$(jq 'length' matrix.json)
             echo "::notice::Including all configurations in matrix (${CONFIG_COUNT} configs - scheduled run with full test suite)"
             echo "timeout=110" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && ! grep -q '\-dev$' "$GITHUB_WORKSPACE/VERSION"; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # WIP DO NOT MERGE: drop the -dev guard so a manual workflow_dispatch on
+            # this dev branch runs the full L3/L4 + L7 matrix like the schedule trigger.
             # On stable branches, workflow_dispatch acts as a scheduled run (triggered by ariane)
             jq --argjson modes "$MODES" '[.[] | del(."key-two", ."test-l7") | . as $entry | [$modes[] | . as $m | $entry + {mode: $m}]] | flatten' configs.json > matrix.json
             CONFIG_COUNT=$(jq 'length' matrix.json)
@@ -296,6 +298,9 @@ jobs:
           elif [ "${{ github.event_name }}" = "schedule" ] && [ "${{ inputs.is-workflow-call }}" != "true" ]; then
             # Scheduled run (direct trigger): full test suite (L3/L4 AND L7)
             echo "::notice::Running full test suite (L3/L4 AND L7 tests)"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # WIP DO NOT MERGE: treat manual dispatch like a scheduled full run.
+            echo "::notice::Running full test suite (L3/L4 AND L7 tests) [workflow_dispatch WIP]"
           else
             # Default mode: L3/L4 tests only, exclude L7
             CONCURRENT_CONNECTIVITY_TESTS="${CONCURRENT_CONNECTIVITY_TESTS}!${L7_FILTER}"
@@ -459,7 +464,9 @@ jobs:
           # Determine if L7 traffic testing should be enabled for conn-disrupt-test
           # Only enable when test-l7-only is true or on scheduled runs
           INCLUDE_CONN_DISRUPT_TEST_L7_TRAFFIC="false"
-          if [ "${{ inputs.test-l7-only }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          # WIP DO NOT MERGE: include workflow_dispatch so the L7 conn-disrupt
+          # traffic runs on a manual dispatch, like a scheduled full run.
+          if [ "${{ inputs.test-l7-only }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             INCLUDE_CONN_DISRUPT_TEST_L7_TRAFFIC="true"
           fi
           echo include_conn_disrupt_test_l7_traffic=${INCLUDE_CONN_DISRUPT_TEST_L7_TRAFFIC} >> $GITHUB_OUTPUT
