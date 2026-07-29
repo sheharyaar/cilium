@@ -194,6 +194,37 @@ get_cluster_ct_map4(const struct ipv4_ct_tuple *tuple, __u32 cluster_id __maybe_
 	return get_ct_map4(tuple);
 }
 
+/* The tenant whose conntrack map the flows handled by this program belong to.
+ *
+ * A ClusterMesh cluster ID names the *peer*, so it has to travel with the
+ * packet and be recovered on every hop. A tenant names the local endpoint
+ * instead, which in bpf_lxc is a compile-time constant and needs nothing
+ * carried alongside. Every other program serves more than one endpoint, or
+ * none, so there is no single tenant to speak of and its flows stay in the
+ * default VPC's map.
+ */
+static __always_inline __u32 local_tenant_id(void)
+{
+#if defined(ENABLE_TENANCY) && defined(IS_BPF_LXC)
+	return TENANT_ID;
+#else
+	return 0;
+#endif
+}
+
+/* get_ct_map4() scoped to the local endpoint's tenant.
+ *
+ * The per-tenant maps live in an array-of-maps, so this returns NULL when the
+ * tenant's map has not been created yet. Callers must treat that as
+ * DROP_CT_NO_MAP_FOUND rather than falling back to the global map, which would
+ * defeat the isolation.
+ */
+static __always_inline void *
+get_tenant_ct_map4(const struct ipv4_ct_tuple *tuple)
+{
+	return get_cluster_ct_map4(tuple, local_tenant_id());
+}
+
 static __always_inline void *
 get_cluster_ct_any_map4(__u32 cluster_id __maybe_unused)
 {
@@ -202,4 +233,12 @@ get_cluster_ct_any_map4(__u32 cluster_id __maybe_unused)
 		return map_lookup_elem(&cilium_per_cluster_ct_any4, &cluster_id);
 #endif
 	return &cilium_ct_any4_global;
+}
+
+/* The related-entry (ICMP) map matching get_tenant_ct_map4(). Same NULL
+ * contract.
+ */
+static __always_inline void *get_tenant_ct_any_map4(void)
+{
+	return get_cluster_ct_any_map4(local_tenant_id());
 }

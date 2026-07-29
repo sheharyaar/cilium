@@ -1,7 +1,7 @@
 # Testing tenancy by hand
 
 How to stand up the prototype, confirm the parts that work, and reproduce the
-two that do not. Every command here was run against a live kind cluster; the
+one that does not. Every command here was run against a live kind cluster; the
 output shown is real.
 
 `test/tenancy/run.sh` automates the assertions. This document is for looking at
@@ -13,8 +13,9 @@ the state directly, which is what you want when something fails.
 - [A shell helper](#a-shell-helper)
 - [Confirming the parts that work](#confirming-the-parts-that-work)
 - [Probes and pod readiness](#probes-and-pod-readiness)
-- [Reproducing bug 1: NodePort reply](#reproducing-bug-1-nodeport-reply-is-not-reverse-natted)
-- [Reproducing bug 2: gateway route](#reproducing-bug-2-tenant-default-route-is-never-installed)
+- [Where a tenant's conntrack lives](#where-a-tenants-conntrack-lives)
+- [Fixed: NodePort reply](#fixed-nodeport-reply-was-not-reverse-natted)
+- [Reproducing the gateway-route bug](#reproducing-the-gateway-route-bug)
 - [Checking the startup guards](#checking-the-startup-guards)
 - [Teardown](#teardown)
 
@@ -25,13 +26,6 @@ Needs `kind`, `kubectl`, `docker` and the `cilium` CLI on PATH.
 ```bash
 make kind WORKERS=2
 make kind-image          # builds localhost:5000/cilium/cilium-dev:local
-```
-
-Multi-pool IPAM blocks every untenanted pod until a pool named `default` exists,
-so apply that before installing:
-
-```bash
-kubectl apply -f test/tenancy/manifests/01-default-pool.yaml
 ```
 
 ```bash
@@ -53,6 +47,19 @@ iptables masquerading unless `egressMasqueradeInterfaces` is set, and
 `snat_v4_needs_masquerade()` is still tenant-blind, so BPF masquerading with
 tenancy has not been examined. Nothing in this document needs the default VPC to
 reach the internet.
+
+Multi-pool IPAM then blocks every untenanted pod until a pool named `default`
+exists, so create it once the agents are up:
+
+```bash
+kubectl apply -f test/tenancy/manifests/01-default-pool.yaml
+```
+
+The order matters and only works this way round. `CiliumPodIPPool` is a CRD that
+the operator registers, so applying the pool on a fresh cluster before installing
+Cilium fails with `ensure CRDs are installed first`. Installing first is fine:
+the agents come up and block untenanted pods until the pool appears, which is
+exactly what the next command resolves.
 
 Then the workloads:
 
@@ -258,71 +265,93 @@ where the probe terminates at a proxy that re-originates the connection inside
 the tenant. That is named as follow-up 1 in the design notes and is not
 implemented here.
 
-## Reproducing bug 1: NodePort reply is not reverse-NATted
+## Where a tenant's conntrack lives
 
-The service and its tenant-tagged backend are installed correctly:
+Two maps are in play and the split is deliberate, so it is worth knowing which
+is which before reading any conntrack dump.
 
-```bash
-agent kind-worker service list | grep -E '31080|31081'
-```
+Everything belonging to an endpoint — both directions of every flow — is tracked
+in that endpoint's tenant map. `select_ct_map4()` in `bpf/bpf_lxc.c` keys on
+`TENANT_ID`, the per-endpoint compile-time constant, for `CT_INGRESS` and
+`CT_EGRESS` alike. Note it deliberately does *not* read `CB_CLUSTER_ID_INGRESS`
+the way the ClusterMesh path does: that meta is set on some paths into an
+endpoint and not others, and reading it would scatter one endpoint's flows
+across maps depending on how each packet arrived.
 
-```
-6   0.0.0.0:31080/TCP   NodePort   1 => 10.64.0.42@1:80/TCP (active)
-9   0.0.0.0:31081/TCP   NodePort   1 => 10.64.0.15@2:80/TCP (active)
-```
+The one exception is the NodePort forward entry created by `nodeport_svc_lb4()`,
+which stays in the **global** map even when the backend is a tenant's. The
+program that has to find it again on the reply is
+`nodeport_rev_dnat_fwd_ipv4()` in bpf_host's to-netdev, and bpf_host serves
+every endpoint on the node, so it has no single tenant. The only handle on one
+would be the backend address the reply carries, which is exactly the value
+tenancy makes ambiguous. Put that entry in the tenant's map and it becomes
+invisible to the one program that needs it.
 
-The `@1` and `@2` on the backends are the tenant the load-balancer will scope
-its endpoint lookup and conntrack to.
+The cost is one unresolved collision: two tenants holding the same backend
+address share a conntrack entry if an identical client address *and* port
+reaches both. That needs two different external clients, behind the same NAT,
+picking the same source port, hitting two tenants' NodePorts, at the same time.
+Narrow, but real, and not currently detected.
 
-Now drive a request from outside the cluster. The kind network is `kind-cilium`,
-not `kind`:
-
-```bash
-NODE=$(kubectl get node kind-worker \
-  -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' \
-  | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1)
-
-docker run --rm --network kind-cilium curlimages/curl:8.10.1 \
-  -sS --max-time 5 -o /dev/null -w '%{http_code}\n' "http://${NODE}:31080/"
-```
-
-This times out. To see why, run the monitor on the backend's node in one shell:
-
-```bash
-agent kind-worker monitor
-```
-
-and repeat the curl in another. The interesting two lines:
-
-```
--> endpoint 17  identity world->105119  172.18.0.5:44432 -> 10.64.0.42:80 tcp SYN
--> network      identity 105119->world  10.64.0.42:80 -> 172.18.0.5:44432 tcp SYN, ACK
-```
-
-Read them carefully, because they say something better than "it is broken":
-
-- The request **was** delivered to endpoint 17, identity 105119, which is
-  acme's server. The service picked a tenant-1 backend and the packet reached
-  the tenant-1 endpoint rather than the identically addressed tenant-2 one. The
-  disambiguation this whole feature exists for is working.
-- The reply leaves as `10.64.0.42:80 -> 172.18.0.5`. It should have been
-  translated back to `<node>:31080`. The client sees a SYN,ACK from an address
-  it never contacted and drops it, so the SYN is retried until curl gives up.
-
-To confirm the suspect, look at whether the forward entry landed in the tenant's
-conntrack map rather than the global one:
+So a healthy dump looks like this — endpoint flows split by tenant, NodePort
+forward entries in global:
 
 ```bash
-agent kind-worker bpf ct list global | grep 31080
+agent kind-worker bpf ct list global  | grep NodePort
+agent kind-worker bpf ct list cluster 1 | grep 'TCP IN'
+agent kind-worker bpf ct list cluster 2 | grep 'TCP IN'
 ```
 
-Bisecting: `bpf/lib/nodeport.h` changes two things behind `ENABLE_TENANCY`, the
-endpoint lookup and the conntrack map. Revert only the conntrack map selection
-back to `get_ct_map4(tuple)`, rebuild, and re-run. If revNAT recovers, the map
-choice is the cause and the endpoint lookup is fine. Keep both halves separate
-while testing; changing them together is how this got missed.
+```
+# global
+TCP OUT 172.18.0.5:43192 -> 10.64.0.98:80  Flags=[ NodePort ] RevNAT=7
+TCP OUT 172.18.0.5:40804 -> 10.64.0.48:80  Flags=[ NodePort ] RevNAT=10
+# cluster 1 (acme)
+TCP IN 172.18.0.5:43192 -> 10.64.0.98:80   SourceSecurityID=2
+TCP IN 10.64.0.7:43190  -> 10.64.0.98:80   SourceSecurityID=81032
+# cluster 2 (globex)
+TCP IN 172.18.0.5:40804 -> 10.64.0.48:80   SourceSecurityID=2
+TCP IN 10.64.0.13:42726 -> 10.64.0.48:80   SourceSecurityID=166877
+```
 
-## Reproducing bug 2: tenant default route is never installed
+If you ever see the same connection with an entry in *both* a tenant map and
+global, the two halves of the datapath disagree about scope and a reply is about
+to go out untranslated. That is what the fixed bug below looked like.
+
+## Fixed: NodePort reply was not reverse-NATted
+
+Kept because the shape of the failure is instructive and the diagnosis method
+generalises.
+
+The symptom was that a NodePort request reached the right tenant's backend and
+the backend answered, but the reply left as `10.64.0.42:80 -> <client>` instead
+of `<node>:31080 -> <client>`, so the client dropped it and the SYN retried
+until curl timed out.
+
+Two separate mistakes, both about *which map*:
+
+1. `nodeport_svc_lb4()` wrote the forward entry into the backend's tenant map.
+   Nothing on the reply path could reach it, for the reason in the section
+   above. Fixed by leaving it global.
+2. `ipv4_policy()` in `bpf/bpf_lxc.c` looked its `CT_INGRESS` entry up through
+   `select_ct_map4()` but created it with a bare `get_ct_map4()`. Lookup in one
+   map, create in another: every packet of the connection came back `CT_NEW`,
+   policy was re-evaluated each time, and the reply never matched anything with
+   a rev-NAT index. Fixed by creating in the same map the lookup used.
+
+The second one is the more general trap and worth checking for elsewhere: a
+lookup and its paired create must agree on the map, and the compiler will not
+tell you when they do not.
+
+To verify the fix, dump both maps as above. The decisive question is whether one
+connection appears in exactly one place per direction. A NodePort entry in
+global with a non-zero `RevNAT`, and its endpoint-side entries in the tenant
+map, is correct. The same connection appearing with `RevNAT=0` in global
+alongside a tenant-map copy is the bug.
+
+## Reproducing the gateway-route bug
+
+The tenant default route is never installed.
 
 Everything the reconciler needs is present. The gateway pod is running with an
 address in the tenant:
@@ -399,7 +428,17 @@ cilium install ... --set=routingMode=native --set=extraArgs='{--enable-tenancy}'
 
 # should refuse: only multi-pool IPAM can hand out per-tenant pools
 cilium install ... --set=ipam.mode=cluster-pool --set=extraArgs='{--enable-tenancy}'
+
+# should refuse: a DSR conntrack entry cannot be scoped to a tenant
+cilium install ... --set=loadBalancer.mode=dsr --set=extraArgs='{--enable-tenancy}'
 ```
+
+The DSR guard is the one added last and the reasoning behind it is the same as
+the NodePort one above. `nodeport_dsr_ingress_ipv4()` runs in bpf_host, bpf_xdp
+and bpf_overlay, none of which serve a single endpoint, so it has to leave its
+conntrack entry in the global map. But a DSR reply from a local backend leaves
+through bpf_lxc, which *does* know its tenant and looks in the tenant's map. The
+two would never meet. `hybrid` is refused too, since it is DSR for TCP.
 
 ```bash
 kubectl -n kube-system logs -l k8s-app=cilium --tail=-1 | grep 'enable-tenancy'

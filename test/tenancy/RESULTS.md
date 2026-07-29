@@ -16,11 +16,11 @@ Two tenants, `acme` and `globex`, each owning one namespace, each with a
 | 2 | in-tenant cross-node pod to pod | **PASS** (both tenants) |
 | 3 | cross-tenant pod to pod blocked | **PASS** |
 | 4 | in-tenant ClusterIP | **PASS** (both tenants) |
-| 5 | NodePort into a tenant backend | **FAIL** — forward path works, reply is not reverse-NATed |
+| 5 | NodePort into a tenant backend | **PASS** (both tenants) |
 | 6 | egress via the tenant gateway | **FAIL** — the default route is never installed |
 
-Design criteria 1, 2 and 3 are met on a live cluster. Criterion 5 is partly met:
-the hard part works, the reply does not. Criterion 4 is not met.
+Design criteria 1, 2, 3 and 5 are met on a live cluster. Criterion 4 is not
+met.
 
 ## What the run confirmed directly
 
@@ -56,32 +56,46 @@ Created per-tenant conntrack maps tenantID=1
 Created per-tenant conntrack maps tenantID=2
 ```
 
-## Failure 5: NodePort reply is not reverse-NATed
+## Fixed after the first run: NodePort reply was not reverse-NATed
 
-The forward direction is correct. `cilium-dbg monitor` on the node hosting the
-backend shows the request reaching the right tenant's pod and the pod answering:
+The first run had criterion 5 failing: the request reached the right tenant's
+backend and the backend answered, but the reply left as `10.64.0.42:80 ->
+<client>` instead of `<node>:31080`, so the client discarded it.
+
+Two independent scope mistakes, both found by dumping the global and per-tenant
+conntrack maps side by side:
+
+**The NodePort forward entry was written to the backend's tenant map.** Nothing
+on the reply path can read it there. The program that looks it up again is
+`nodeport_rev_dnat_fwd_ipv4()` in bpf_host's to-netdev, which serves every
+endpoint on the node and so has no single tenant; the only handle on one would
+be the backend address the reply carries, which is exactly the value tenancy
+makes ambiguous. That entry now stays in the global map. The residual collision
+— two tenants sharing a backend address, reached by an identical client address
+and port — is documented in TESTING.md and not detected.
+
+**`ipv4_policy()` looked its CT_INGRESS entry up in one map and created it in
+another.** The lookup went through `select_ct_map4()`, the create used a bare
+`get_ct_map4()`. Every packet of the connection therefore came back `CT_NEW`,
+policy was re-evaluated per packet, and the reply never matched an entry
+carrying a rev-NAT index. This one predates tenancy as a latent inconsistency;
+scoping `select_ct_map4()` is what made it bite.
+
+`select_ct_map4()` now keys on the endpoint's own `TENANT_ID` for both
+directions rather than on `CB_CLUSTER_ID_INGRESS`, so an endpoint's flows land
+in one map regardless of how the packet arrived. Verified on the cluster:
 
 ```
--> endpoint 17  identity world->105119  172.18.0.5:44432 -> 10.64.0.42:80 tcp SYN
--> network      identity 105119->world  10.64.0.42:80 -> 172.18.0.5:44432 tcp SYN, ACK
+# global
+TCP OUT 172.18.0.5:43192 -> 10.64.0.98:80  [ NodePort ] RevNAT=7
+TCP OUT 172.18.0.5:40804 -> 10.64.0.48:80  [ NodePort ] RevNAT=10
+# cluster 1 (acme)          # cluster 2 (globex)
+TCP IN 10.64.0.7:43190  -> 10.64.0.98:80   TCP IN 10.64.0.13:42726 -> 10.64.0.48:80
 ```
 
-Identity 105119 is acme's server, so the same-address disambiguation this
-feature exists for is working: the service selected a backend in tenant 1 and
-the packet was delivered to tenant 1's endpoint.
-
-The reply leaves as `10.64.0.42:80 -> 172.18.0.5` rather than being translated
-back to `172.18.0.2:31080`, so the client discards it and the SYN is retried
-until the connection times out.
-
-The likely cause is the conntrack entry moved by the NodePort commit. The
-forward entry is created in the backend's per-tenant map, and the reply from a
-local tenant backend leaves through `bpf_lxc`, which selects the per-tenant map
-too, so the two were expected to agree. They evidently do not, and the next step
-is to compare the tuple and scope each side uses rather than assume the map
-choice alone is the difference. Reverting the NodePort conntrack change to the
-global map would be the first thing to try, since that isolates it from the
-lookup change in the same commit.
+A DSR load-balancer mode hits the same wall at
+`nodeport_dsr_ingress_ipv4()` and cannot be resolved the same way, so
+`--bpf-lb-mode=dsr` and `hybrid` are now refused at startup.
 
 ## Failure 6: tenant default route is never installed
 
@@ -119,7 +133,6 @@ Neither was reachable from unit tests or the BPF suite.
 ```
 make kind WORKERS=2
 make kind-image
-kubectl apply -f test/tenancy/manifests/01-default-pool.yaml
 cilium install --chart-directory=./install/kubernetes/cilium --version= --wait \
   --set=image.override=localhost:5000/cilium/cilium-dev:local --set=image.pullPolicy=Never \
   --set=operator.image.override=localhost:5000/cilium/operator-generic:local \
@@ -128,8 +141,14 @@ cilium install --chart-directory=./install/kubernetes/cilium --version= --wait \
   --set=kubeProxyReplacement=true --set=ipv6.enabled=false \
   --set=enableIPv4Masquerade=false --set=enableIPv6Masquerade=false \
   --set=extraArgs='{--enable-tenancy}'
+kubectl apply -f test/tenancy/manifests/01-default-pool.yaml
 ./test/tenancy/run.sh
 ```
+
+The `default` pool goes on after the install, not before: `CiliumPodIPPool` is a
+CRD the operator registers, so applying it to a fresh cluster fails with `ensure
+CRDs are installed first`. The agents block untenanted pods until it appears,
+which is harmless.
 
 Masquerading is off because multi-pool IPAM refuses to start with iptables
 masquerading unless `egressMasqueradeInterfaces` is set, and no assertion needs

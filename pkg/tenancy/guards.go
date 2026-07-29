@@ -10,6 +10,7 @@ import (
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -24,6 +25,7 @@ type GuardInputs struct {
 	IdentityManagementMode string
 	IdentityAllocationMode string
 
+	LBMode              string
 	EnableIPv6          bool
 	EnableHostFirewall  bool
 	EnableEgressGateway bool
@@ -102,6 +104,19 @@ func Validate(in GuardInputs) error {
 		errs = append(errs, fmt.Errorf(
 			"--%s requires --%s=%s, got %q: only the agent can resolve a pod's tenant, so an operator-managed identity would be missing the tenant label",
 			EnableTenancy, option.IdentityManagementMode, option.IdentityManagementModeAgent, in.IdentityManagementMode))
+	}
+
+	// DSR ingress conntrack runs in bpf_host, bpf_xdp and bpf_overlay, none of
+	// which serve a single endpoint. The only handle on the tenant there would
+	// be the destination address, which is exactly what tenancy makes
+	// ambiguous, so nodeport_dsr_ingress_ipv4() has to leave its entry in the
+	// global map. The reply from the local backend leaves through bpf_lxc,
+	// which does know its tenant and looks in the tenant's map, so the two
+	// would never meet and the reply would go out un-reverse-NATed.
+	if in.LBMode == loadbalancer.LBModeDSR || in.LBMode == loadbalancer.LBModeHybrid {
+		errs = append(errs, fmt.Errorf(
+			"--%s requires --%s=%s, got %q: the DSR ingress conntrack entry cannot be scoped to a tenant, so the reply would not be reverse-NATed",
+			EnableTenancy, loadbalancer.LoadBalancerModeName, loadbalancer.LBModeSNAT, in.LBMode))
 	}
 
 	// The prototype datapath converts the IPv4 lookups only. Their IPv6 twins

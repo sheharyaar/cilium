@@ -28,6 +28,7 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	k8stypes "github.com/cilium/cilium/pkg/k8s/types"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/option"
@@ -79,6 +80,7 @@ type tenancyParams struct {
 	IPsecUserConfig ipseccfg.UserConfig
 	WGUserConfig    wgcfg.UserConfig
 	IdentityCfg     identitycachecell.SharedConfig
+	LBConfig        loadbalancer.Config
 
 	IdentityAllocator identitycachecell.CachingIdentityAllocator
 
@@ -129,6 +131,7 @@ func registerTenancy(p tenancyParams) error {
 		IPAM:                   p.DaemonConfig.IPAM,
 		IdentityManagementMode: p.IdentityCfg.IdentityManagementMode,
 		IdentityAllocationMode: p.DaemonConfig.IdentityAllocationMode,
+		LBMode:                 p.LBConfig.LBMode,
 		EnableIPv6:             p.DaemonConfig.EnableIPv6,
 		EnableHostFirewall:     p.DaemonConfig.EnableHostFirewall,
 		EnableEgressGateway:    p.DaemonConfig.EnableEgressGateway,

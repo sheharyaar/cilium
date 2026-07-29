@@ -467,7 +467,21 @@ select_ct_map4(struct __ctx_buff *ctx __maybe_unused, int dir __maybe_unused,
 	       struct ipv4_ct_tuple *tuple)
 {
 	__u32 cluster_id = 0;
-#ifdef ENABLE_CLUSTER_AWARE_ADDRESSING
+#if defined(ENABLE_TENANCY)
+	/* Both directions of every flow of this endpoint are tracked in its own
+	 * tenant's map. Two tenants may hold the same pod address talking to the
+	 * same peer address, so a single global map would merge the two flows
+	 * onto one entry.
+	 *
+	 * Unlike a ClusterMesh cluster ID, which names the peer and therefore has
+	 * to be handed over in the meta by whoever resolved it, a tenant names
+	 * this endpoint and is a compile-time constant. Deliberately not reading
+	 * CB_CLUSTER_ID_{IN,E}GRESS here: those are set on some paths into an
+	 * endpoint and not others, and reading them would put an endpoint's flows
+	 * in different maps depending on how the packet arrived.
+	 */
+	cluster_id = local_tenant_id();
+#elif defined(ENABLE_CLUSTER_AWARE_ADDRESSING)
 	if (dir == CT_EGRESS)
 		cluster_id = ctx_load_meta(ctx, CB_CLUSTER_ID_EGRESS);
 	else if (dir == CT_INGRESS)
@@ -2261,10 +2275,16 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, __u32 src_label,
 		 * a loopback connection. Populate .loopback, so that policy enforcement
 		 * is bypassed.
 		 */
-		if (ret == CT_NEW && ip4->saddr == CONFIG(service_loopback_ipv4).be32 &&
-		    ct_has_loopback_egress_entry4(get_ct_map4(tuple), tuple)) {
-			ct_state_new.loopback = true;
-			break;
+		if (ret == CT_NEW && ip4->saddr == CONFIG(service_loopback_ipv4).be32) {
+			void *lb_ct_map = get_tenant_ct_map4(tuple);
+
+			if (!lb_ct_map)
+				return DROP_CT_NO_MAP_FOUND;
+
+			if (ct_has_loopback_egress_entry4(lb_ct_map, tuple)) {
+				ct_state_new.loopback = true;
+				break;
+			}
 		}
 
 		if (unlikely(ct_state->loopback))
@@ -2299,8 +2319,25 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, __u32 src_label,
 	}
 
 	if (ret == CT_NEW) {
+		/* Same map the lookup above used, which under tenancy is this
+		 * endpoint's own. Creating in the global map instead would leave
+		 * the entry somewhere no later lookup goes: every subsequent
+		 * packet of the connection would come back CT_NEW, policy would
+		 * be re-evaluated each time, and a NodePort reply would never
+		 * find the forward entry it has to reverse-NAT against.
+		 */
+		void *ct_map = get_tenant_ct_map4(tuple);
+		void *ct_related_map;
+
+		if (!ct_map)
+			return DROP_CT_NO_MAP_FOUND;
+
+		ct_related_map = get_tenant_ct_any_map4();
+		if (!ct_related_map)
+			return DROP_CT_NO_MAP_FOUND;
+
 #if defined(ENABLE_NODEPORT) && defined(ENABLE_SRV6)
-		ct_state_new.node_port = ct_has_nodeport_egress_entry4(get_ct_map4(tuple),
+		ct_state_new.node_port = ct_has_nodeport_egress_entry4(ct_map,
 								       tuple, NULL, false);
 #endif /* ENABLE_NODEPORT && ENABLE_SRV6 */
 		ct_state_new.src_sec_id = src_label;
@@ -2313,7 +2350,7 @@ ipv4_policy(struct __ctx_buff *ctx, struct iphdr *ip4, __u32 src_label,
 		 * case, it's OK to return ext_err from ct_create4 along with
 		 * its error code.
 		 */
-		ret = ct_create4(get_ct_map4(tuple), &cilium_ct_any4_global, tuple, ctx, CT_INGRESS,
+		ret = ct_create4(ct_map, ct_related_map, tuple, ctx, CT_INGRESS,
 				 &ct_state_new, ext_err);
 		if (IS_ERR(ret))
 			return ret;

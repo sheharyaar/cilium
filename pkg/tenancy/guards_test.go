@@ -10,6 +10,7 @@ import (
 
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -22,6 +23,7 @@ func validInputs() GuardInputs {
 		IPAM:                   ipamOption.IPAMMultiPool,
 		IdentityManagementMode: option.IdentityManagementModeAgent,
 		IdentityAllocationMode: option.IdentityAllocationModeCRD,
+		LBMode:                 loadbalancer.LBModeSNAT,
 	}
 }
 
@@ -67,6 +69,17 @@ func TestGuardsRejectConflicts(t *testing.T) {
 			name:   "ipv6 enabled",
 			mutate: func(in *GuardInputs) { in.EnableIPv6 = true },
 			errMsg: "does not support IPv6 yet",
+		},
+		{
+			name:   "DSR load balancer mode",
+			mutate: func(in *GuardInputs) { in.LBMode = loadbalancer.LBModeDSR },
+			errMsg: "requires --bpf-lb-mode=snat",
+		},
+		{
+			// Hybrid is DSR for TCP, so it reaches the same conntrack site.
+			name:   "hybrid load balancer mode",
+			mutate: func(in *GuardInputs) { in.LBMode = loadbalancer.LBModeHybrid },
+			errMsg: "requires --bpf-lb-mode=snat",
 		},
 		{
 			name:   "host firewall",

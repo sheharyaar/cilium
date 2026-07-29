@@ -2209,6 +2209,17 @@ nodeport_dsr_ingress_ipv4(struct __ctx_buff *ctx, struct ipv4_ct_tuple *tuple, f
 	/* lookup with SCOPE_FORWARD: */
 	__ipv4_ct_tuple_reverse(tuple);
 
+	/* Left on the global map under tenancy, unlike the other NodePort
+	 * conntrack sites. This runs in bpf_host/bpf_xdp/bpf_overlay, where the
+	 * only handle on the tenant would be the destination address, and that
+	 * is precisely the address tenancy makes ambiguous. The reply from the
+	 * local backend leaves through bpf_lxc, which does know its tenant and
+	 * would look in the tenant's map, so the two would not agree.
+	 *
+	 * tenancy.Validate() refuses to start with a DSR load balancer mode for
+	 * that reason, which is what keeps this branch unreachable rather than
+	 * subtly wrong.
+	 */
 	ret = ct_lazy_lookup4(get_ct_map4(tuple), tuple, ctx, fraginfo,
 			      l4_off, CT_EGRESS, SCOPE_FORWARD,
 			      CT_ENTRY_DSR, NULL, &monitor);
@@ -2266,6 +2277,10 @@ nodeport_rev_dnat_get_info_ipv4(struct __ctx_buff *ctx,
 {
 	const struct ct_entry *entry;
 
+	/* Global, matching where nodeport_svc_lb4() put the forward entry. See
+	 * the comment there for why a tenant's NodePort entry cannot live in
+	 * the tenant's map.
+	 */
 	entry = ct_get_nodeport_egress_entry4(get_ct_map4(tuple), tuple);
 	if (!entry)
 		return false;
@@ -2380,6 +2395,7 @@ nodeport_rev_dnat_ipv4(struct __ctx_buff *ctx, struct trace_ctx *trace,
 	else if (ret == CTX_ACT_REDIRECT)
 		goto redirect;
 
+	/* Global, matching where nodeport_svc_lb4() put the forward entry. */
 	ret = ct_lazy_lookup4(get_ct_map4(&tuple), &tuple, ctx, fraginfo,
 			      l4_off, CT_INGRESS, SCOPE_REVERSE,
 			      CT_ENTRY_NODEPORT, &ct_state, &monitor);
@@ -2920,32 +2936,25 @@ static __always_inline int nodeport_svc_lb4(struct __ctx_buff *ctx,
 		/* only match CT entries that belong to the same service: */
 		ct_state.rev_nat_index = ct_state_svc.rev_nat_index;
 
-#ifdef ENABLE_TENANCY
-		/* Track in the backend's tenant, not the global map. Two tenants
-		 * may hold the same backend address, so one client reaching both
-		 * services would otherwise collide on a single conntrack entry.
+		/* Deliberately the global map, even under tenancy, and even when
+		 * the backend is a tenant's.
 		 *
-		 * The reply from a local tenant backend leaves through bpf_lxc,
-		 * which selects the same per-tenant map, so the two agree. A reply
-		 * from a *remote* tenant backend re-enters through the rev-NAT
-		 * ingress path, which is still tenant-blind; NodePort to a remote
-		 * tenant backend is therefore not supported yet.
+		 * This entry exists to be found again on the reply, and the
+		 * program that looks for it is nodeport_rev_dnat_fwd_ipv4() in
+		 * bpf_host's to-netdev, for a local backend as much as a remote
+		 * one. bpf_host serves every endpoint on the node, so it has no
+		 * single tenant, and the only handle on one would be the backend
+		 * address the reply carries -- which is precisely the value
+		 * tenancy makes ambiguous. Putting this entry in the backend's
+		 * tenant map would hide it from the one program that needs it,
+		 * and the reply would leave un-reverse-NATed.
 		 *
-		 * Not applied to ClusterMesh: there the reply path uses the global
-		 * map, so moving the forward entry would strand it.
+		 * The cost is that two tenants holding the same backend address
+		 * share an entry when an identical client address and port
+		 * reaches both. See the NodePort limitation in
+		 * test/tenancy/TESTING.md.
 		 */
-		void *nodeport_ct_map = get_cluster_ct_map4(tuple, cluster_id);
-
-		/* The per-tenant maps live in an array-of-maps, so the inner
-		 * lookup can come back NULL and the verifier insists it be
-		 * checked. It is NULL when the tenant's map has not been created,
-		 * which means the tenant is not ready to carry traffic yet.
-		 */
-		if (!nodeport_ct_map)
-			return DROP_CT_NO_MAP_FOUND;
-#else
 		void *nodeport_ct_map = get_ct_map4(tuple);
-#endif
 
 		/* Cache is_fragment in advance, lb4_local may invalidate ip4. */
 		ret = ct_lazy_lookup4(nodeport_ct_map, tuple, ctx,
