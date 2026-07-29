@@ -1,9 +1,10 @@
 # One server and one client per tenant, pinned to different nodes so the
 # cross-node path is exercised, plus a NodePort service per tenant.
 #
-# No readiness or liveness probes anywhere: tenant pods have no host-netns route,
-# so kubelet cannot reach them. That is a documented prototype limitation, not an
-# oversight here.
+# No readiness or liveness probes anywhere. Kubelet has no route to a tenant pod,
+# so a probe against one never succeeds and the pod would never become ready.
+# Omitting probes is what lets these workloads run; without them the pods reach
+# Ready normally.
 ---
 apiVersion: apps/v1
 kind: Deployment

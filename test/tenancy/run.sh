@@ -106,8 +106,10 @@ else
 fi
 
 info "Waiting for workloads"
-# Not --for=condition=Ready: tenant pods have no host route, so kubelet cannot
-# probe them and they never report Ready. Wait for an assigned IP instead.
+# Wait for an IP rather than for Ready. These workloads define no probes so they
+# do become Ready, but an IP is what the assertions need and it appears first.
+# A tenant pod WITH a readinessProbe would never become ready: kubelet has no
+# route to a tenant pod. See TESTING.md.
 for ns in acme globex; do
 	for app in server client; do
 		for _ in $(seq 1 90); do

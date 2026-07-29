@@ -12,6 +12,7 @@ the state directly, which is what you want when something fails.
 - [Setup](#setup)
 - [A shell helper](#a-shell-helper)
 - [Confirming the parts that work](#confirming-the-parts-that-work)
+- [Probes and pod readiness](#probes-and-pod-readiness)
 - [Reproducing bug 1: NodePort reply](#reproducing-bug-1-nodeport-reply-is-not-reverse-natted)
 - [Reproducing bug 2: gateway route](#reproducing-bug-2-tenant-default-route-is-never-installed)
 - [Checking the startup guards](#checking-the-startup-guards)
@@ -59,12 +60,14 @@ Then the workloads:
 kubectl apply -f test/tenancy/manifests/
 ```
 
-Do not wait for pods to become `Ready`. Tenant pods have no host-netns route, so
-kubelet cannot probe them and they never report ready. Wait for an IP instead:
-
 ```bash
 kubectl -n acme get pods -o wide
 ```
+
+These workloads define no probes, so they reach `Ready` normally. That is worth
+being precise about, because the neighbouring limitation is easy to overstate:
+see [Probes and pod readiness](#probes-and-pod-readiness) below. Give a tenant
+pod a `readinessProbe` and it will never become ready.
 
 ## A shell helper
 
@@ -210,6 +213,50 @@ deployment requirement of this design, not a bug:
 SVC=$(kubectl -n acme get svc server -o jsonpath='{.spec.clusterIP}')
 kubectl -n acme exec deploy/client -- curl -sS --max-time 5 -o /dev/null -w '%{http_code}\n' "http://${SVC}/"
 ```
+
+## Probes and pod readiness
+
+Two claims here are easy to run together, and only one of them is true.
+
+**Kubelet cannot reach a tenant pod's IP.** True, and by design. Tenant pods get
+no per-endpoint host route, because two tenants may hold the same address and the
+routes would collide in the host table. Anything originating in the host network
+namespace, kubelet included, has no way to reach them.
+
+**Tenant pods therefore never become Ready.** False. A pod with no
+`readinessProbe` is Ready once its containers are running; kubelet asks the
+container runtime, not the network. The workloads in `manifests/` define no
+probes and reach `Ready` like any other pod.
+
+The limitation bites only when a probe is actually configured. To see it:
+
+```bash
+kubectl -n acme patch deploy server --type=json -p='[{
+  "op": "add",
+  "path": "/spec/template/spec/containers/0/readinessProbe",
+  "value": {"httpGet": {"path": "/", "port": 80}, "periodSeconds": 2}
+}]'
+
+kubectl -n acme get pods -l app=server -w
+```
+
+The new pod stays `0/1 Running` indefinitely. `kubectl describe` shows the probe
+failing with a connection timeout to the pod IP, and a Deployment configured this
+way never completes its rollout. Revert with:
+
+```bash
+kubectl -n acme patch deploy server --type=json -p='[{
+  "op": "remove", "path": "/spec/template/spec/containers/0/readinessProbe"
+}]'
+```
+
+This is the same limitation from a different angle: the host cannot reach tenant
+pods, so anything host-originated fails, and probes are the case operators hit
+first. It is production-gating rather than cosmetic — user-defined probes on
+tenant workloads are routine — and the intended fix is kube-OVN's TPROXY shape,
+where the probe terminates at a proxy that re-originates the connection inside
+the tenant. That is named as follow-up 1 in the design notes and is not
+implemented here.
 
 ## Reproducing bug 1: NodePort reply is not reverse-NATted
 
